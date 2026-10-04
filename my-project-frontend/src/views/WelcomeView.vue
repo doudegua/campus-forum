@@ -6,15 +6,19 @@
   <div style="width:100vw;height:100vh;overflow:hidden;display:flex">
     <div style="flex: 1;background-color: black">
       <!--
-        背景图用**本地文件**（public/icon1.jpg → 根路径 /icon1.jpg），不用外链。
-        原来指向 cube.elemecdn.com —— 那是小米的 CDN，而**它现在已经挂了**
-        （实测 HTTP 000，一个字节都下不来），所以登录页背景一直是黑的。
+        背景图用**本地文件**（public/login-bg.jpg → 根路径 /login-bg.jpg）。
 
-        这和 constants/index.js 里头像那处是同一个教训，那边已经改成本地文件了：
-          第三方 CDN 哪天挂掉/被限流，你的页面就跟着坏，而你什么都做不了。
-        静态资源放 public/ 下由自己的 nginx 提供，就没有这个风险。
+        来源：原来是外链小米 CDN 的一张图（cube.elemecdn.com）。那个链接本身
+        没坏 —— 实测从新加坡能下到原图（6000x4000，4.2MB），
+        但**从国内访问超时**（HTTP 000）。所以对国内访问者来说它就是坏的，
+        登录页背景永远是黑的。
+
+        已经把它下下来、缩到 1920x1280（约 490KB）放进 public/ 自己托管。
+        这样谁访问都拿得到，也不受第三方可用性影响。
+
+        这和 constants/index.js 里头像那处是同一个教训：静态资源自己托管。
       -->
-      <el-image style="width: 100%;height: 100%" fit="cover" src="/icon1.jpg"/>
+      <el-image style="width: 100%;height: 100%" fit="cover" src="/login-bg.jpg"/>
     </div>
     <div class="welcome-title">
       <div style="font-size: 30px;font-weight: bold">欢迎来到校园论坛</div>
