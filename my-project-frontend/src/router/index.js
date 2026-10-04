@@ -27,6 +27,22 @@ const router = createRouter({
             path: '/index',
             name: 'index',
             component: () => import('@/views/IndexView.vue'),
+            /*
+             * `/index` 本身没有页面内容 —— 它的 children 才是真正的页面，
+             * 内容渲染在 IndexView 里的 <router-view> 中。
+             * 所以不写 redirect 的话，登录后跳到 /index 会看到
+             * **顶部栏、侧栏都在，中间一片空白**（<router-view> 没东西可渲染）。
+             *
+             * 重定向到 tieba：论坛是主功能，进来就该看到帖子列表。
+             * main-page（那个只有时间和欢迎语的页面）菜单项之前已经删掉了，
+             * 所以没有任何入口指向它，更不该把它当默认页。
+             *
+             * 用 redirect 而不是加一个 `path: ''` 的空组件：
+             * redirect 会让地址栏变成 /index/tieba，用户能直接看到真实地址、
+             * 也能收藏和分享；空组件方案地址栏停在 /index，
+             * 刷新或分享时又得靠一次额外的判断才不空白。
+             */
+            redirect: '/index/tieba',
             children: [
                 {
                     path: 'main-page',
