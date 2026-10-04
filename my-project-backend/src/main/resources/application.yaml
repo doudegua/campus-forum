@@ -1,0 +1,127 @@
+# ===========================================================================
+# application.yaml
+#
+# ⚠️ 这个文件**进了公开仓库**，所以里面不能有真实密钥。
+#
+# 写法是 ${环境变量名:默认值}，机制两句话：
+#   环境变量存在   → 用它（部署时走这条）
+#   环境变量不存在 → 用冒号后面的默认值（本地开发走这条）
+#
+# 于是三个场景同时成立：
+#   本地   mvn spring-boot:run   照旧能跑
+#   Docker .env 的值经 compose 注入，覆盖默认值
+#   别人   clone 下来不配任何东西就能起（非敏感项默认值就是本地开发的值）
+#
+# 唯一没有默认值的是 spring.mail.password —— 那是**你自己的**邮箱授权码，
+# 别人机器上本来也不该有。要发验证码就把它写进 .env（见 .env.example）。
+#
+# 历史提醒：这个文件曾经把真实授权码写死在 password 那一行，并且进过 git
+# 历史（提交 5506aba）。所以那串旧码已经当作泄露处理，必须去 163 重新生成，
+# 不要从旧历史里捡回来用。
+# ===========================================================================
+server:
+  # 让 Tomcat 认反向代理传来的 X-Forwarded-For / X-Forwarded-Proto。
+  #
+  # 为什么需要它：部署拓扑是 浏览器 → nginx 容器 → 后端容器。
+  # 后端的 request.getRemoteAddr() 看到的是 nginx 容器的 IP（172.18.x），
+  # 不是真实用户。而 FlowLimitFilter 正是拿它当限流粒度的，于是
+  # **所有用户共用一个计数器**，阈值 10000 请求/秒形同虚设。
+  #
+  # NATIVE 会启用 Tomcat 的 RemoteIpValve：读 X-Forwarded-For，
+  # **在确认来源可信之后**改写 getRemoteAddr() 的返回值。
+  # 好处是 FlowLimitFilter 一行代码都不用改。
+  #
+  # ⚠️ 安全前提：X-Forwarded-For 是客户端能自己伪造的普通请求头。
+  # 无脑信任它等于把"换一个假 IP 就能绕过限流"送给攻击者。
+  # RemoteIpValve 用 internalProxies 白名单挡住这一点：只有当请求**来自**
+  # 白名单里的地址时才采信这个头。它的默认值包含 172.16.0.0/12，
+  # 而 Docker 网桥正好在这个段里（容器地址形如 172.18.0.x）。
+  # 所以 nginx 转发过来的会被信任，而任何绕过 nginx 直连的伪造请求不会。
+  # （compose 里 backend 没有暴露端口，外面本来也连不到 8080。）
+  forward-headers-strategy: NATIVE
+spring:
+  sql:
+    init:
+      # always：每次启动都重放 schema.sql。
+      # ⚠️ 所以 schema.sql 里只能放幂等语句（CREATE TABLE IF NOT EXISTS）。
+      #    ALTER 写进去，第二次启动就会 Duplicate column name 且应用起不来 —— 这个坑踩过。
+      mode: always
+      schema-locations: classpath:db/schema.sql
+  mail:
+    host: smtp.163.com
+    # ⚠️ 端口必须显式写 465（SSL），不能用默认值。
+    #
+    # 不写端口时 Spring Boot 走默认的 25，而**阿里云等云厂商默认封禁出方向 25 端口**
+    # （那是垃圾邮件的主要通道）。症状是发信全部失败，而报错看起来像"邮件服务坏了"：
+    #     MailConnectException: Couldn't connect to host, port: smtp.163.com, 25
+    #     java.net.ConnectException: Connection timed out
+    #
+    # 实测服务器上：25 端口超时，465 / 587 / 994 都通。
+    # 这里选 465（SMTPS，一上来就是 TLS），配下面的 ssl.enable=true。
+    # 另一条路是 587 + STARTTLS，也能用，但 465 的语义更直接。
+    port: ${MAIL_PORT:465}
+    # 发验证码用的邮箱账号。换自己的改这里，或用 MAIL_USERNAME 覆盖。
+    # ⚠️ 注意不能把它设成**空字符串** —— ${VAR:default} 只在变量"不存在"时用默认值，
+    #    变量"存在但为空"会用空字符串，导致发件地址为空、每封邮件都失败。
+    username: ${MAIL_USERNAME:emailverify114514@163.com}
+    # 163 的 SMTP 授权码（不是登录密码）。默认留空：没有它应用照样启动，
+    # 只是"发验证码"这个功能会失败 —— 不会连带别的功能起不来。
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          # 465 端口是隐式 SSL（连上就是加密的），必须显式开启
+          ssl:
+            enable: true
+          # 连接/读取超时。默认是无限等待 —— 一旦网络有问题，
+          # 消费线程会一直挂着，队列积压却看不出原因。
+          # 给个上限，让失败快速暴露成异常。
+          connectiontimeout: 10000
+          timeout: 10000
+          writetimeout: 10000
+  rabbitmq:
+    addresses: ${RABBITMQ_HOST:localhost}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  data:
+    redis:
+      # Spring Boot 3 把前缀从 spring.redis.* 改成了 spring.data.redis.*。
+      # 写成旧的名字不会报错，只会**静默连到 localhost:6379** ——
+      # 在容器里那就连到容器自己身上，症状是登出/黑名单功能莫名其妙失效。
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  security:
+    jwt:
+      # ⚠️ 签发 JWT 的密钥。默认值 666666 只适合本地 ——
+      #    拿到它的人可以伪造任意用户的 token。部署时必须用 JWT_KEY 覆盖成随机串。
+      key: ${JWT_KEY:666666}
+      expire: 7
+  datasource:
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # Docker 里 DB_HOST 填 mysql（compose 的服务名），本地不填就是 localhost
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:test}
+minio:
+  # 图片存储。Docker 里 MINIO_ENDPOINT 指向 compose 的 minio 服务
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: ${MINIO_BUCKET:study}
+qweather:
+  # 和风天气。api-host 和这几个 ID 不是密钥 —— 真正的凭据是那把 Ed25519 私钥。
+  #
+  # 私钥位置可以用 QWEATHER_PRIVATE_KEY_LOCATION 覆盖，这是给 Docker 用的：
+  #   本地  默认值 classpath:qweather/ed25519-private.pem（文件在 src/main/resources 下）
+  #   Docker 容器里没有这个文件（.dockerignore 挡住了，绝不进镜像），
+  #          所以 compose 把它指到挂载进来的 /app/config/ed25519-private.pem。
+  #
+  # 文件不存在时**应用照样启动**，只是天气接口失败 ——
+  # QWeatherTokenService 是懒加载的，签名时才去读文件（已实测）。
+  # 注意私钥必须是 PKCS#8 格式（头是 "BEGIN PRIVATE KEY"），
+  # 有的是 "BEGIN RSA PRIVATE KEY"（PKCS#1），Java 的 EdDSA 读不了。
+  private-key-location: ${QWEATHER_PRIVATE_KEY_LOCATION:classpath:qweather/ed25519-private.pem}
+  api-host: ${QWEATHER_API_HOST:ma487v6uam.re.qweatherapi.com}
+  kid: ${QWEATHER_KID:T95D4A378G}
+  developer-id: ${QWEATHER_DEVELOPER_ID:Q15620077C}
+  prog-id: ${QWEATHER_PROG_ID:2NKPDF6EQY}

@@ -1,0 +1,417 @@
+# ===========================================================================
+# docker-compose.yml —— 一键起整个项目（6 个服务）
+#
+# 用法：
+#     cp .env.example .env      # 第一次，然后编辑 .env 填密钥
+#     docker compose up -d --build
+#     浏览器打开 http://<服务器IP>
+#
+# 常用命令：
+#     docker compose ps                    看状态
+#     docker compose logs -f backend       跟某个服务的日志
+#     docker compose down                  停掉（数据保留在 volume 里）
+#     docker compose down -v               停掉**并删除数据**（慎用）
+#
+# 数据在哪：MySQL 数据、MinIO 图片、RabbitMQ 队列都放在命名 volume 里，
+# 和容器生命周期分开。`down` 再 `up` 数据还在；只有 `down -v` 才会删。
+#
+# ---------------------------------------------------------------------------
+# 反向代理下的真实用户 IP（限流能不能生效就靠这个）
+#
+# 拓扑是 浏览器 → frontend(nginx) → backend，而 backend 用 getRemoteAddr()
+# 做限流粒度 —— 默认拿到的会是 nginx 容器的 IP，所有用户共用一个计数器。
+#
+# 已经在两处修好了：
+#   application.yaml   server.forward-headers-strategy=NATIVE
+#                      → 启用 Tomcat 的 RemoteIpValve，认 X-Forwarded-For，
+#                        并改写 getRemoteAddr()。FlowLimitFilter 不用改代码。
+#   backend 环境变量   FLOW_LIMIT_SKIP_LOOPBACK=false
+#                      → 关掉"回环地址免检"，部署环境不该有免检来源。
+#
+# 安全性：伪造 X-Forwarded-For 并不能绕过限流。RemoteIpValve 只在请求
+# **来自它信任的代理**（默认含 172.16.0.0/12，正是 Docker 网段）时才采信这个头；
+# 而且 backend 没有暴露端口，外部本来就到不了 8080。
+# ---------------------------------------------------------------------------
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MySQL —— 业务数据
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: campus-forum-mysql
+    restart: unless-stopped
+    environment:
+      # ⚠️ 必须写 ${VAR:-}，不能写 ${VAR:}。
+      # 少了那个连字符，Compose v5（服务器上是 v5.6.0）会直接报
+      #   invalid interpolation format for services.mysql.environment.DB_PASSWORD
+      # 并且在 `docker compose up` 的第一步就退出，一个容器都起不来。
+      # 而旧版 Compose（本机 compose v2 系列）对 ${VAR:} 是宽容的 ——
+      # 也就是说这个错误**在本地看不出来，只有真正部署时才炸**。
+      # 两者的语义完全一样：变量未设置或为空时取空字符串。
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-}
+      MYSQL_DATABASE: ${DB_NAME:-test}
+      # 服务器默认字符集。不显式设的话，建库时可能不是 utf8mb4，
+      # 中文和 emoji 就会乱码或直接插入失败。
+      LANG: C.UTF-8
+      # 这一行是给下面的健康检查用的：那个 shell 写法要读 $DB_PASSWORD，
+      # 而 MySQL 镜像本身只认 MYSQL_ROOT_PASSWORD，不会设 DB_PASSWORD。
+      # 不传进来的话健康检查会一直失败，backend 永远等不到 mysql 健康、
+      # 整个 compose 卡在启动阶段 —— 而且报错信息只说"依赖未就绪"。
+      DB_PASSWORD: ${DB_PASSWORD:-}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # 时间：服务器时区 UTC，但项目里存的是北京时间。
+      # 不设的话 NOW() 出来比北京时间早 8 小时，"帖子时间不对"就是这个原因。
+      - --default-time-zone=+08:00
+    volumes:
+      # 命名 volume：数据存在这里，容器重建不丢
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 健康检查让 backend 能"等 MySQL 真的能连了"再启动。
+      # mysqladmin ping 比端口探测准 —— 端口通了不代表能接受连接。
+      #
+      # 这里用 CMD-SHELL 而不是 CMD，是因为要处理"没设密码"的情况：
+      #   CMD 形式 ["mysqladmin","ping","-uroot","-p"] 里，-p 后面没有值，
+      #   mysqladmin 会把**下一个参数**当成密码，参数就串位了。
+      #   而且镜像里也没有 /bin/sh 之外的东西可用，干脆走 shell 判断一下。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot $${DB_PASSWORD:+-p$${DB_PASSWORD}}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [app]
+
+  # ---------------------------------------------------------------------------
+  # Redis —— JWT 黑名单（登出用）
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: campus-forum-redis
+    restart: unless-stopped
+    # appendonly：默认 Redis 是纯内存，重启数据就没了。
+    # 这里存的是"登出后的 token 黑名单"，丢了不影响正确性（最多是已登出的
+    # token 在过期前又能用），所以不必须。但开着代价很小，顺手加上。
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [app]
+
+  # ---------------------------------------------------------------------------
+  # MinIO —— 图片存储（S3 兼容）
+  # ---------------------------------------------------------------------------
+  # ⚠️ 为什么不用官方的 minio/minio：
+  #    MinIO 在 2025-10 停止了 Docker 镜像的免费分发 ——
+  #      Docker Hub 上 minio/minio 和 minio/mc 的仓库已被移除（404）
+  #      quay.io 上的同名仓库改为需要认证（401）
+  #      dl.min.io 的二进制下载返回 410 Gone
+  #      GitHub Release 只剩标签，附件一个都没有
+  #    所以 compose 原来的 minio/minio:latest 到了服务器上会直接拉不到。
+  #
+  #    这里用 alpine/minio。它是 Alpine 官方组织（github.com/alpine-docker/minio）
+  #    构建的，内容就是把最后一个官方发布版的二进制放进 Alpine 镜像：
+  #      基础 = alpine-minirootfs 3.20.8
+  #      COPY go/bin/minio /usr/local/bin/minio
+  #      USER minio（非 root 运行）
+  #    已核对镜像元数据：Entrypoint/Cmd/端口/数据目录与官方镜像完全一致，
+  #    且二进制里确实支持 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD。
+  #
+  #    标签用固定版本而不是 latest-release：实测服务器上的镜像加速器
+  #    **不转发 latest-release 这个 tag**（拉取失败），换成下面这个带日期的
+  #    固定标签就成功了。而且固定标签本来就是更好的做法 ——
+  #    latest-release 会漂移，某天悄悄换了内容你都不知道。
+  #    这个版本是 MinIO 停发前的最后一版，和它 GitHub Release 的 tag 一致。
+  # ---------------------------------------------------------------------------
+  # 修正 MinIO 数据目录的属主 —— 跑一次就退出，必须早于 minio 启动
+  # ---------------------------------------------------------------------------
+  # ⚠️ 这个服务不是多余的。alpine/minio 镜像里配了 `USER minio`（uid=100），
+  #    而 Docker 创建的命名 volume 默认属于 root:root 且权限是 755 ——
+  #    minio 用户**对它没有写权限**。MinIO 启动时要往 /data/.minio.sys/ 写元数据，
+  #    于是直接 FATAL：
+  #        Error: unable to create (/data/.minio.sys/tmp) file access denied
+  #        FATAL Unable to initialize backend: file access denied
+  #    表现是 minio 容器反复重启（Restarting），healthcheck 永远不通过，
+  #    而 backend 用 depends_on: service_healthy 等它 → 整个 compose 起不来。
+  #
+  #    为什么不在 minio 服务里加 user: root 绕过：
+  #      那等于把"以非 root 运行"这个安全设计丢掉。宁可在初始化时把权限配对，
+  #      也不要为了省事让长期运行的服务拿 root。
+  #
+  #    chown 100:101 是镜像里 minio 用户的实际 uid:gid（查过 id 命令的输出）。
+  #    chmod 750 而不是 777：只有属主可写，不给"所有人可写"留口子。
+  minio-data-init:
+    image: alpine:latest
+    container_name: campus-forum-minio-data-init
+    volumes:
+      - minio-data:/data
+    command: ["sh", "-c", "chown -R 100:101 /data && chmod 750 /data && echo 'minio 数据目录属主已修正'"]
+    networks: [app]
+    restart: "no"
+
+  minio:
+    image: alpine/minio:RELEASE.2025-10-15T17-29-55Z
+    container_name: campus-forum-minio
+    restart: unless-stopped
+    depends_on:
+      minio-data-init:
+        condition: service_completed_successfully
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # ⚠️ MinIO 要求账号密码至少 8 位。太短会**启动失败**，
+      # 报错在容器日志里，compose 这边只表现为"起来了又退了"。
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      # 只把控制台暴露到宿主机，方便你在浏览器里看图片对象（可选）。
+      # 9000（API）不用开 —— 只有后端容器需要访问它，走内部网络更安全。
+      - "9001:9001"
+    healthcheck:
+      # 用 MinIO 自带的健康端点，不依赖 mc —— alpine/minio 里没有 mc 这个客户端，
+      # 原来那条 ["CMD","mc","ready","local"] 在这个镜像上根本执行不了
+      # （表现为容器一直 unhealthy，backend 永远等不到它，整个 compose 卡住）。
+      # /minio/health/live 在 9000 上，是 MinIO 官方给负载均衡用的存活探针。
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # 首次启动要格式化数据目录，给足等待时间
+      start_period: 30s
+    networks: [app]
+
+  # ---------------------------------------------------------------------------
+  # 初始化 MinIO 的 bucket —— 跑一次就退出
+  # ---------------------------------------------------------------------------
+  # 为什么要单独一个服务：MinIO 只管存对象，**不会自动建 bucket**。
+  # 不建的话，第一次上传头像就会报 "The specified bucket does not exist"，
+  # 而这发生在运行时、不在启动时，很容易当成代码 bug 去查。
+  # （后端 ImageServiceImpl 是直接 putObject 的，没有"不存在就创建"的逻辑。）
+  #
+  # 为什么不用 mc：mc 的镜像同样被停发了，剩下的全是 2023 年的老镜像或
+  # 来路不明的个人重建版。而 MinIO 兼容 S3 协议，任何 S3 客户端都能建 bucket，
+  # 没必要依赖 MinIO 自家的工具 —— 所以这里用 Python + boto3。
+  minio-init:
+    image: python:3.12-alpine
+    container_name: campus-forum-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-study}
+    volumes:
+      # 只读挂载初始化脚本。改脚本不用重建镜像。
+      - ./scripts/minio-init.py:/init.py:ro
+    entrypoint: >
+      /bin/sh -c "
+      pip install --quiet --no-cache-dir 'boto3>=1.34,<2' &&
+      python /init.py
+      "
+    networks: [app]
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # 灌入种子数据（帖子类型/版块）—— 跑一次就退出
+  # ---------------------------------------------------------------------------
+  # ⚠️ 这个服务是必需的，不是可有可无的。
+  #
+  # 踩过的坑：种子数据文件早就写好了（INSERT IGNORE 建 4 个版块），
+  # 但**从来没接进部署流程** —— 结果线上 db_topic_type 是空表，
+  # /api/forum/topic_type 返回 200 但 data 是 []，
+  # 前端发帖的下拉框没有选项，于是**根本发不了帖**。
+  # （更迷惑的是接口返回 200，不是错误，看日志只能看到空数组。）
+  #
+  # 为什么用 mysql 客户端而不是让后端去灌：
+  #   后端启动时确实能顺手 insert，但那是把"数据初始化"塞进"应用启动"里，
+  #   职责混了；而且多实例部署时会重复执行。
+  #   放在独立的初始化容器里，语义清楚：**建库之后、业务之前，灌一次种子数据**。
+  #
+  # 为什么是 INSERT IGNORE：这个容器每次 up 都会跑，必须幂等。
+  #
+  # ⚠️ mysql 命令必须带 --default-character-set=utf8mb4，否则中文会变成乱码。
+  #
+  # 踩过的坑：种子文件本身是正确的 UTF-8（字节 e6a0a1 = 校），
+  # 但客户端**默认按 latin1 读文件**，于是把 12 个字节当成 12 个 latin1 字符，
+  # 再按 utf8mb4 写进库 —— 结果存进去的是 C3A6C2A0C2A1... 这种双重编码，
+  # 一个「校园生活」变成 12 个乱码字符。
+  #
+  # 这个 bug 的特点是**入库时不报任何错**（latin1 能接受任意字节），
+  # 只有打开页面看到乱码才发现。所以参数必须显式写上。
+  #
+  # 另一种等价写法是在 SQL 里给字符串加 _utf8mb4 前缀
+  # （INSERT ... VALUES (_utf8mb4'校园生活')），那样连客户端字符集都不用管。
+  # 两种都行，这里选前者 —— 因为它对所有 SQL 文件统一生效，不用每个文件都记得加。
+  db-init:
+    image: mysql:8.0
+    container_name: campus-forum-db-init
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${DB_PASSWORD:-}
+    volumes:
+      # 只读挂载 SQL 目录。以后加新的种子数据文件（020-xxx.sql、030-xxx.sql），
+      # 放进去就会按文件名顺序被自动执行，不用改这个文件。
+      - ./db/init:/scripts:ro
+    entrypoint: >
+      /bin/sh -c "
+      for f in /scripts/*.sql; do
+        [ -e \"$$f\" ] || continue;
+        echo \"执行 $$f\";
+        mysql --default-character-set=utf8mb4 -h mysql -u ${DB_USERNAME:-root} ${DB_NAME:-test} < \"$$f\" || exit 1;
+      done;
+      echo '种子数据灌入完成'
+      "
+    networks: [app]
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ —— 异步发验证码邮件
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: campus-forum-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      # 管理界面，浏览器看队列有没有积压（可选，但排错很有用）
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks: [app]
+
+  # ---------------------------------------------------------------------------
+  # 后端
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./my-project-backend
+    image: campus-forum-backend:latest
+    container_name: campus-forum-backend
+    restart: unless-stopped
+    depends_on:
+      # 这几种 condition 是"等对方真的健康了再启动我"。
+      # 不用它的话，后端会比 MySQL 先起来然后连接失败退出，
+      # 靠 restart 反复重试 —— 日志里一片红，看起来像坏了，其实只是在等。
+      mysql:
+        condition: service_healthy
+      # 等种子数据灌完。少了这条，首次启动时版块表是空的 ——
+      # 而那个状态**不报错**（接口返回 200 + 空数组），只是发帖时选不到类型。
+      db-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # 这些名字对应 application.yaml 里的 ${VAR:默认值}。
+      # 这里给了值，就会覆盖那些默认值 —— 这正是"配置文件进仓库、
+      # 密钥不进仓库"能同时成立的原因。
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-test}
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-study}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      JWT_KEY: ${JWT_KEY:-666666}
+      # ⚠️ 只传密码，**不要传 MAIL_USERNAME**。
+      #
+      # 踩过的坑：原来这里写了 `MAIL_USERNAME: ${MAIL_USERNAME:-}`，
+      # 而 .env 里没有 MAIL_USERNAME 这一项 —— 于是它被展开成**空字符串**，
+      # 容器里就有了一个"存在但为空"的 MAIL_USERNAME。
+      #
+      # 关键在于"变量不存在"和"变量存在但是空"是两回事：
+      #   application.yaml 里写的是 ${MAIL_USERNAME:emailverify114514@163.com}
+      #     变量不存在   → 用冒号后的默认值（正常发信）✓
+      #     变量存在但为空 → 用空字符串（发件人是空地址）✗
+      # 空地址会让监听器抛 AddressException: Illegal address in string `''`，
+      # 表现是"接口返回 200 但收不到邮件"。
+      # 而且 Spring Boot 还会把 MAIL_USERNAME 环境变量直接绑到
+      # spring.mail.username 上，它优先级高于 application.yaml 里的写法，
+      # 所以那个默认值也救不回来。
+      #
+      # 发件邮箱不是密钥，application.yaml 里有默认值就够了；
+      # 要用别的邮箱时，在 .env 里把 MAIL_USERNAME 设成**非空**的值即可。
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      # 关掉"跳过回环地址"。
+      #
+      # 这个开关的用途是本地开发时防止把自己刷进限流（本机请求不计流量）。
+      # 但在容器里，后端的 getRemoteAddr() 已经通过 forward-headers-strategy
+      # 换成了**真实用户 IP**（见 application.yaml 里那段说明），
+      # 所以"跳过回环"在生产环境失去意义，只剩下一种误伤：
+      # 真实用户恰好从被判为回环的地址访问时被免检放行。
+      # 部署环境不该有"某些来源免检"的规则，于是显式关掉。
+      FLOW_LIMIT_SKIP_LOOPBACK: "false"
+      # 和风天气私钥的位置。镜像里**没有**这个文件（.dockerignore 挡住了），
+      # 所以指向挂载进来的 /app/config/ed25519-private.pem。
+      # 文件不存在时应用照样启动，只是天气接口失败（已实测）。
+      QWEATHER_PRIVATE_KEY_LOCATION: file:/app/config/ed25519-private.pem
+    volumes:
+      # 挂**目录**而不是单个文件 —— 这一点是刻意的：
+      #   挂不存在的单个文件时，Docker 会在宿主机上建一个**同名目录**，
+      #   然后应用读它得到一个目录句柄，报错信息很难懂。
+      #   挂目录的话目录不存在就自动建个空目录，应用读不到文件就报
+      #   "找不到 Ed25519 私钥"，语义清楚。
+      # 想启用天气功能就把私钥放到服务器的 secrets/ed25519-private.pem。
+      # 注意必须是 PKCS#8（头是 "BEGIN PRIVATE KEY"），不能用 PKCS#1。
+      - ./secrets:/app/config:ro
+    networks: [app]
+    # 不对外暴露 8080：所有流量都从 nginx 进来。
+    # 少开一个端口就少一个攻击面，也避免和宿主机上别的东西抢端口。
+
+  # ---------------------------------------------------------------------------
+  # 前端（nginx 同时提供静态文件和反代 /api）
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./my-project-frontend
+    image: campus-forum-frontend:latest
+    container_name: campus-forum-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # 这是唯一对外的入口。80 端口给浏览器，其余全在内部网络里。
+      - "80:80"
+    networks: [app]
+
+# ---------------------------------------------------------------------------
+# 命名 volume —— 数据的实际存放位置
+# ---------------------------------------------------------------------------
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+  rabbitmq-data:
+
+networks:
+  app:
+    driver: bridge

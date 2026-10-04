@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="/favicon.ico">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!--
+      这里原来有一行从公共 CDN 加载 Element Plus 样式的 <link>，已删除。
+      理由两条：
+        1. 它是**多余的** —— Element Plus 的样式已经由 main.js 里的
+           'element-plus/theme-chalk/dark/css-vars.css' 和组件的按需样式引入了，
+           那份 CDN 样式是重复加载
+        2. 它是**外链** —— 那个 CDN 被墙或挂掉时，页面样式会缺一块，
+           而这种故障你自己完全控制不了
+      本地引入的样式跟着构建产物走，没有这个风险。
+    -->
+    <title>校园论坛</title>
+    <!--
+      标题原来叫 "Vite App"，是脚手架生成的默认值，一直没改。
+      浏览器标签页、收藏夹、搜索结果里显示的都是它 —— 面试官打开链接
+      看到标签页写着 "Vite App"，第一印象就打了折。
+    -->
+    <style>
+        body {
+            margin: 0;
+        }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

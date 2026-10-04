@@ -1,0 +1,31 @@
+-- ===========================================================================
+-- 002 —— db_topic 加评论计数（2026-09-30）
+--
+-- ⚠️ 同 001：**全新库不要跑这个文件**。schema.sql 里 db_topic 的建表语句
+--    已经带了 comment_count 和 like_count，再跑会 ERROR 1060 并中止。
+--    只有"老库升级"才跑，且只跑一次。
+--
+-- 手动跑一次：
+--     mysql -u root test < src/main/resources/db/migration/002-topic-comment-count.sql
+--
+-- 为什么这个必须放迁移、而 db_comment 那张新表放在 schema.sql 里：
+--   schema.sql 每次启动都重放。CREATE TABLE IF NOT EXISTS 重放无害，
+--   ALTER TABLE ADD COLUMN 重放会报 Duplicate column name 并让应用起不来。
+--   所以：新表进 schema.sql，改旧表进这里。
+-- ===========================================================================
+
+-- 冗余计数列。它存在的唯一意义就是**避免详情页每次 COUNT(*)** ——
+-- 这一列本身就是那个缓存，所以不用再往 Redis 上想（见 TopicDetailVo 的注释）。
+--
+-- DEFAULT 0 而不是允许 NULL：不用 COUNT(*) 的代价就是要维护它，
+-- 而 NULL 会让 "+1" 变成 NULL（SQL 里 NULL + 1 = NULL），
+-- 一条老帖子的计数就永久坏掉了。
+--
+-- 注意 Topic 实体里**故意没有** commentCount 这个字段：
+--   1. 详情页不需要它（计数从 commentService 拿，语义更清楚）
+--   2. 加了它，@AllArgsConstructor 的参数就多一个，
+--      createTopic 里那句 new Topic(...) 会跟着断
+--   MyBatis-Plus 只映射实体里有的字段，所以 INSERT 时这一列不出现，
+--   由下面的 DEFAULT 0 兜底。
+ALTER TABLE db_topic
+    ADD COLUMN comment_count INT NOT NULL DEFAULT 0 COMMENT '评论数（冗余计数，避免每次 COUNT(*)）';
