@@ -93,6 +93,16 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     }
 
     @Override
+    @Transactional
+    public String deleteComment(int uid, int id) {
+        Comment exist = this.getById(id);
+        if (exist == null)                  return "评论不存在！";
+        if (!exist.getUid().equals(uid))    return "没有权限删除这条帖子";
+        this.remove(new LambdaQueryWrapper<Comment>().eq(Comment::getTopicId, id));
+        return null;
+    }
+
+    @Override
     public CommentListVo fetchComments(CommentListQueryVo vo) {
         Integer size = vo.getSize();
 

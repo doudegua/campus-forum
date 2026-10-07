@@ -23,6 +23,10 @@ TopicService extends IService<Topic> {
     /** 发帖。成功返回 null */
     String createTopic(int uid, CreateTopicVo vo);
 
+    String editTopic(int uid, CreateTopicVo vo, int id);
+
+    String deleteTopic(int uid, int id);
+
     /**
      * 首页/版块/个人页共用的列表查询。游标分页，不用 OFFSET。
      *
@@ -41,4 +45,5 @@ TopicService extends IService<Topic> {
      * 后者现在还没被用到，等点赞表建好之后它要用来算 {@code liked}。
      */
     TopicDetailVo fetchTopic(int id, int viewerId);
+
 }

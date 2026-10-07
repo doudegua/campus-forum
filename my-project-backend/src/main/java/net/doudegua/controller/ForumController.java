@@ -66,6 +66,19 @@ public class ForumController {
         return ControllerUtils.messageHandle(() -> topicService.createTopic(uid, vo));
     }
 
+    @PostMapping("/topic/{id}")
+    public RestBean<Void> editTopic(@RequestAttribute("id") int uid,
+                                    @RequestBody @Valid CreateTopicVo vo,
+                                    @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> topicService.editTopic(uid, vo, id));
+    }
+
+    @DeleteMapping("/topic/{id}")
+    public RestBean<Void> deleteTopic(@RequestAttribute("id") int uid,
+                                      @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> topicService.deleteTopic(uid, id));
+    }
+
     /**
      * 帖子详情。
      * <p>
@@ -109,6 +122,12 @@ public class ForumController {
     public RestBean<Void> createComment(@RequestAttribute("id") int uid,
                                         @RequestBody @Valid CreateCommentVo vo) {
         return ControllerUtils.messageHandle(() -> commentService.createComment(uid, vo));
+    }
+
+    @DeleteMapping("/comment/{id}")
+    public RestBean<Void> deleteComment(@RequestAttribute("id") int uid,
+                                        @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> commentService.deleteComment(uid, id));
     }
 
     /**

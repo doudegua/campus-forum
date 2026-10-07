@@ -1,28 +1,23 @@
 package net.doudegua.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
-import net.doudegua.entity.dto.Account;
-import net.doudegua.entity.dto.AccountProfile;
-import net.doudegua.entity.dto.Topic;
-import net.doudegua.entity.dto.TopicType;
+import net.doudegua.entity.dto.*;
 import net.doudegua.entity.vo.request.CreateTopicVo;
 import net.doudegua.entity.vo.request.TopicListQueryVo;
 import net.doudegua.entity.vo.response.TopicDetailVo;
 import net.doudegua.entity.vo.response.TopicPreviewListVo;
 import net.doudegua.entity.vo.response.TopicPreviewVo;
 import net.doudegua.mapper.TopicMapper;
-import net.doudegua.service.TopicService;
-import net.doudegua.service.TopicTypeService;
+import net.doudegua.service.*;
 import net.doudegua.service.AccountProfileService;
-import net.doudegua.service.AccountProfileService;
-import net.doudegua.service.AccountService;
-import net.doudegua.service.TopicLikeService;
 import net.doudegua.utils.Const;
 import net.doudegua.utils.FlowUtils;
 import net.doudegua.utils.HtmlSanitizer;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 
@@ -46,6 +41,9 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     @Resource
     TopicLikeService topicLikeService;
+
+    @Resource
+    CommentService commentService;
 
     @Override
     public String createTopic(int uid, CreateTopicVo vo) {
@@ -84,16 +82,47 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
         return this.save(topic) ? null : "发帖失败，请重试";
     }
 
-    /**
-     * 待实现（这块留给你自己写）。已经实现了
-     * <p>
-     * 建议的顺序：
-     * <ol>
-     *   <li>用 Wrapper 按 cursor / types / uid 查一页（size + 1 条，方便判断还有没有更多）</li>
-     *   <li>批量查类型名和作者名，拼成 TopicPreviewVo</li>
-     *   <li>算出 nextCursor：还有更多就是最后一条的 id，没有就是 null</li>
-     * </ol>
-     */
+    @Override
+    public String editTopic(int uid, CreateTopicVo vo, int id) {
+        if(this.getById(id) == null) {
+            return "帖子不存在";
+        }
+        if(topicTypeService.getById(vo.getType()) == null) {
+            return "帖子类型不存在";
+        }
+        String content = HtmlSanitizer.clean(vo.getContent());
+
+        String plain = stripHtml(content);
+        if (plain.isEmpty()) {
+            return "请输入帖子内容";
+        }
+        if (plain.length() > CreateTopicVo.CONTENT_TEXT_MAX) {
+            return "内容不能超过 " + CreateTopicVo.CONTENT_TEXT_MAX + " 个字";
+        }
+        if (!flowUtils.limitOnceCheck(Const.TOPIC_CREATE_LIMIT + uid, CREATE_INTERVAL_SECONDS)) {
+            return "修改太频繁了，请 " + CREATE_INTERVAL_SECONDS + " 秒后再试";
+        }
+
+        return this.update(new LambdaUpdateWrapper<Topic>()
+                .set(Topic::getTitle, vo.getTitle().trim())
+                .set(Topic::getType, vo.getType())
+                .set(Topic::getContent, content)
+                .eq(Topic::getId, id))
+                ? null : "修改失败，请重试";
+    }
+
+    @Override
+    @Transactional // 只有通过Spring代理掉该Service，transactional方生效，否则不行
+    public String deleteTopic(int uid, int id) {
+        Topic exist = this.getById(id);
+        if (exist == null)                    return "帖子不存在";
+        if (!exist.getUid().equals(uid))      return "没有权限删除这条帖子";
+        commentService.remove(new LambdaQueryWrapper<Comment>().eq(Comment::getTopicId, id));
+        topicLikeService.remove(new LambdaQueryWrapper<TopicLike>().eq(TopicLike::getTopicId, id));
+        this.removeById(id);
+        return null;
+    }
+
     @Override
     public TopicPreviewListVo fetchTopicPreviewList(TopicListQueryVo vo, int viewerId) {
         Integer size = vo.getSize();
