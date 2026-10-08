@@ -84,10 +84,18 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     @Override
     public String editTopic(int uid, CreateTopicVo vo, int id) {
-        if(this.getById(id) == null) {
+        Topic exist = this.getById(id);
+        if (exist == null) {
             return "帖子不存在";
         }
-        if(topicTypeService.getById(vo.getType()) == null) {
+        // 作者校验。少了这一句，任何登录用户 POST 一下 /api/forum/topic/{别人的帖子id}
+        // 就能改掉别人的帖子 —— 而且比"删得掉别人的帖"更隐蔽：
+        // 编辑不新增行、不报错、也没有任何通知，作者只会某天发现内容变了。
+        // 和 deleteTopic 里那句是同一个判断，两处都不能少
+        if (!exist.getUid().equals(uid)) {
+            return "没有权限编辑这条帖子";
+        }
+        if (topicTypeService.getById(vo.getType()) == null) {
             return "帖子类型不存在";
         }
         String content = HtmlSanitizer.clean(vo.getContent());

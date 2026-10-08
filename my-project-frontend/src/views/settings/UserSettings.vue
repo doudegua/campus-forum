@@ -180,28 +180,28 @@ async function uploadAvatar(options) {
 <template>
   <div style="display: flex;">
     <div class="settings-left">
-      <Card :icon="User" title="Account Info Settings" desc="Edit your account here. Manipulate whether or not showcase your info in Safe Word.">
+      <Card :icon="User" title="账号信息设置" desc="在此处编辑账号信息，在安全设置中选择是否展示">
         <el-form :model="baseForm" :rules="rules" ref="baseFormRef" label-position="top" style="margin: 0 10px 10px 10px;">
-          <el-form-item label="Username" prop="username">
+          <el-form-item label="用户名" prop="username">
             <el-input v-model="baseForm.username" maxlength="20"/>
           </el-form-item>
-          <el-form-item label="Gender" prop="gender">
+          <el-form-item label="性别" prop="gender">
             <el-radio-group v-model="baseForm.gender">
-              <el-radio :label="0">Male</el-radio>
-              <el-radio :label="1">Female</el-radio>
-              <el-radio :label="2">Helicopter</el-radio>
+              <el-radio :label="0">男</el-radio>
+              <el-radio :label="1">女</el-radio>
+              <el-radio :label="2">武装直升机</el-radio>
             </el-radio-group>
           </el-form-item>
-          <el-form-item label="Phone" prop="phone">
+          <el-form-item label="电话" prop="phone">
             <el-input v-model="baseForm.phone" maxlength="11"/>
           </el-form-item>
           <el-form-item label="QQ" prop="qq">
             <el-input v-model="baseForm.qq" maxlength="15"/>
           </el-form-item>
-          <el-form-item label="Wechat" prop="wechat">
+          <el-form-item label="微信" prop="wechat">
             <el-input v-model="baseForm.wechat" maxlength="20"/>
           </el-form-item>
-          <el-form-item label="Personal Desc" prop="description">
+          <el-form-item label="个人描述" prop="description">
             <el-input v-model="baseForm.description" type="textarea" :rows="6" maxlength="200"/>
           </el-form-item>
           <el-button :icon="Select" @click="updateProfile">Save</el-button>

@@ -8,7 +8,8 @@ import ForumSidebar from "@/views/forum/components/ForumSidebar.vue";
 import {ElMessage} from "element-plus";
 import axios from "axios";
 import {accessHeader} from "@/net";
-import {computed, onMounted, ref} from "vue";
+import {computed, onActivated, onMounted, ref} from "vue";
+import {useForumStore} from "@/store/forum.js";
 
 /**
  * 组件名必须显式写出来。
@@ -23,6 +24,36 @@ const editorVisible = ref(false)
 
 /** 拿到 TopicList 实例，发帖成功后喊它重拉 */
 const topicListRef = ref(null)
+
+const forumStore = useForumStore()
+
+/**
+ * keep-alive 把这一页缓存住了，所以"从详情页返回"不会重建组件、
+ * onMounted 也不会再跑 —— 列表里已加载的 20/40/60 条和滚动位置都保住了。
+ * <p>
+ * 代价是：详情页里**删掉或改过**的那条帖子，列表不知道。
+ * 删了再返回，它会原样留在列表里。所以详情页在写完数据后会打一个"列表过期"
+ * 信号，这里负责消费它。
+ * <p>
+ * 为什么不在 onActivated 里无条件重拉：那就是把 keep-alive 的收益全扔了 ——
+ * 每次从任意详情页返回都清空重拉，用户滚半天的位置和已加载的几十条一起消失。
+ * 绝大多数返回是"看完就走"，数据根本没变。
+ */
+let activatedBefore = false
+
+onActivated(() => {
+  if (!activatedBefore) {
+    // onActivated 在**首次挂载时也会触发**（和 onMounted 挨着）。
+    // 那时 onMounted 刚拉过第一页，数据本来就是新的 ——
+    // 把这个信号丢掉即可，否则会紧接着再拉一遍，白白两个一样的请求
+    activatedBefore = true
+    forumStore.consumeTopicListStale()
+    return
+  }
+  if (forumStore.consumeTopicListStale()) {
+    topicListRef.value?.refresh()
+  }
+})
 
 /* ---------------- 类型筛选 ---------------- */
 

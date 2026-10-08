@@ -38,6 +38,14 @@ public class TopicDetailVo {
      * 接口是裸的，一条 curl 就能存进去 {@code <img src=x onerror=...>}。
      */
     String content;
+    /**
+     * 帖子类型的 <b>id</b>，对应 db_topic_type.id。
+     * <p>
+     * 和下面的 {@code typeName} 是两件事，都得给：名字是给人看的，id 是给
+     * "编辑抽屉把下拉框预选上"用的。只给名字的话前端就得拿名字去类型列表里
+     * 反查 id —— 重名会选错，类型改过名之后反查出来的 id 还可能根本对不上。
+     */
+    Integer type;
     String typeName;
     /** 作者 id。点作者进主页要用它，所以不能只给名字 */
     Integer authorId;
@@ -85,6 +93,9 @@ public class TopicDetailVo {
         this.id = topic.getId();
         this.title = topic.getTitle();
         this.content = topic.getContent();
+        // type 是 id（topic 行里本来就有），typeName 是外面查好了传进来的名字。
+        // 一个来自 topic、一个来自参数，别把两者弄混
+        this.type = topic.getType();
         this.typeName = typeName;
         this.authorId = topic.getUid();
         this.authorName = authorName;

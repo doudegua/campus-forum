@@ -96,9 +96,30 @@ public class CommentServiceImpl extends ServiceImpl<CommentMapper, Comment> impl
     @Transactional
     public String deleteComment(int uid, int id) {
         Comment exist = this.getById(id);
-        if (exist == null)                  return "评论不存在！";
-        if (!exist.getUid().equals(uid))    return "没有权限删除这条帖子";
-        this.remove(new LambdaQueryWrapper<Comment>().eq(Comment::getTopicId, id));
+        if (exist == null)                  return "评论不存在";
+        if (!exist.getUid().equals(uid))    return "没有权限删除这条评论";
+
+        // ↓↓↓ 从这行往下才开始写。上面两句 return 必须在事务的第一次写之前 ↓↓↓
+
+        // 删的是**这一条**评论，所以按主键删。
+        // 注意别写成 .eq(Comment::getTopicId, id)：那个 id 是评论 id，
+        // 拿它去比 topic_id 会删掉**整个帖子下的所有评论**，而这一条反而留着。
+        // 更阴的是它不报错 —— 评论 id 和 topic_id 都是小整数，撞上太正常了
+        if (!this.removeById(id)) {
+            // 影响 0 行：并发的另一个请求刚把它删了。什么都没写，所以直接返回是安全的
+            return "评论不存在";
+        }
+
+        // 计数是冗余列，createComment 加了它，这里就必须减回去。
+        // 只加不减的话那个数字会永远比实际大，而且没人会发现 ——
+        // 它是个"缓存"，不是每次 COUNT(*) 查出来的。
+        //
+        // GREATEST(..., 0) 是保险：这一列现在已经被上面那个 bug 弄得不一致了，
+        // 没有它的话减到 0 以下会在页面上显示成"-1"
+        topicMapper.update(null, new LambdaUpdateWrapper<Topic>()
+                .setSql("comment_count = GREATEST(comment_count - 1, 0)")
+                .eq(Topic::getId, exist.getTopicId()));
+
         return null;
     }
 
