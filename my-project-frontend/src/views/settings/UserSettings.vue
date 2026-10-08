@@ -207,24 +207,24 @@ async function uploadAvatar(options) {
           <el-button :icon="Select" @click="updateProfile">Save</el-button>
         </el-form>
       </Card>
-      <card style="margin-top: 10px" :icon="Message" title="Email Settings" desc="You may manipulate your email.">
-        <el-form :model="emailForm" :rules="rules" ref="emailFormRef" label-position="top" style="margin: 0 10px 10px 10px;">
-          <el-form-item label="Email" prop="email">
-            <el-input placeholder="请输入邮箱地址" v-model="emailForm.email"/>
-          </el-form-item>
-          <el-form-item label="Verify Code">
-            <el-row style="width: 100%" :gutter="5">
-              <el-col :span="10">
-                <el-input placeholder="请获取验证码" v-model="emailForm.code"/>
-              </el-col>
-              <el-col :span="6" >
-                <el-button type="success" v-model="emailForm.email">获取验证码</el-button>
-              </el-col>
-            </el-row>
-          </el-form-item>
-        </el-form>
-        <el-button :icon="Refresh">Save</el-button>
-      </card>
+<!--      <card style="margin-top: 10px" :icon="Message" title="Email Settings" desc="You may manipulate your email.">-->
+<!--        <el-form :model="emailForm" :rules="rules" ref="emailFormRef" label-position="top" style="margin: 0 10px 10px 10px;">-->
+<!--          <el-form-item label="Email" prop="email">-->
+<!--            <el-input placeholder="请输入邮箱地址" v-model="emailForm.email"/>-->
+<!--          </el-form-item>-->
+<!--          <el-form-item label="Verify Code">-->
+<!--            <el-row style="width: 100%" :gutter="5">-->
+<!--              <el-col :span="10">-->
+<!--                <el-input placeholder="请获取验证码" v-model="emailForm.code"/>-->
+<!--              </el-col>-->
+<!--              <el-col :span="6" >-->
+<!--                <el-button type="success" v-model="emailForm.email">获取验证码</el-button>-->
+<!--              </el-col>-->
+<!--            </el-row>-->
+<!--          </el-form-item>-->
+<!--        </el-form>-->
+<!--        <el-button :icon="Refresh">Save</el-button>-->
+<!--      </card>-->
     </div>
     <div class="settings-right">
       <div style="position: sticky;top: 20px">
