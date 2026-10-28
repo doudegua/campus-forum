@@ -433,6 +433,11 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"      # 不给陌生人注册
       GF_AUTH_ANONYMOUS_ENABLED: "false"   # 默认是 true，不关掉密码就白设了
       GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # 开启 gzip。默认是关的 —— 而 Grafana 的前端 JS 有 5MB 多，
+      # 这台服务器的公网带宽只有 1Mbps 左右，不压缩的话首屏要等一分钟以上
+      # （表现是标签页标题出来了、页面一直白屏）。
+      # 压缩后传输量大约降到三分之一。
+      GF_SERVER_ENABLE_GZIP: "true"
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
