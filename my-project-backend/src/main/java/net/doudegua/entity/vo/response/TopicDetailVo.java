@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import net.doudegua.entity.dto.Topic;
+import net.doudegua.entity.dto.TopicDetailRow;
 
 import java.util.Date;
 
@@ -104,5 +105,25 @@ public class TopicDetailVo {
         // 这两个不是"查好了传进来"的，是跟着 topic 那一行一起回来的
         this.commentCount = topic.getCommentCount();
         this.likeCount = topic.getLikeCount();
+    }
+
+    /**
+     * 详情页现在的构造方式：作者名和头像已经在同一条 SQL 里 JOIN 出来了。
+     * <p>
+     * 老构造器保留着 —— 万一将来有别的地方只有 {@code Topic} 而没走 JOIN 查询，
+     * 还能用它。但 {@code fetchTopic} 已经改走这一条了。
+     */
+    public TopicDetailVo(TopicDetailRow row, String typeName) {
+        this.id = row.getId();
+        this.title = row.getTitle();
+        this.content = row.getContent();
+        this.type = row.getType();
+        this.typeName = typeName;
+        this.authorId = row.getUid();
+        this.authorName = row.getAuthorName();
+        this.authorAvatar = row.getAuthorAvatar();
+        this.time = row.getTime();
+        this.commentCount = row.getCommentCount();
+        this.likeCount = row.getLikeCount();
     }
 }

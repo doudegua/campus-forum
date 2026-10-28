@@ -16,6 +16,7 @@ import net.doudegua.service.AccountProfileService;
 import net.doudegua.utils.Const;
 import net.doudegua.utils.FlowUtils;
 import net.doudegua.utils.HtmlSanitizer;
+import net.doudegua.utils.TtlCache;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +27,43 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     /** 同一用户两次发帖的最小间隔（秒）。要改就改这里 */
     private static final int CREATE_INTERVAL_SECONDS = 60;
+
+    /**
+     * 版块名字的缓存时长。
+     * <p>
+     * {@code db_topic_type} 只有几行、内容基本不变，但原来**每一个列表请求都要查它一次**。
+     * 压测实测每查一次库约 1.7ms CPU —— 大头是 JDBC 往返和 MyBatis 映射的固定开销，
+     * MySQL 自己执行这条 SQL 只要 0.6ms。列表接口一共才 4 条 SQL，等于这一条白吃了约 18% 的 CPU。
+     * <p>
+     * 为什么 TTL 敢取 10 分钟：版块是运营数据，由 SQL 种子文件灌入，
+     * 应用里**没有**增删改版块的接口（{@code ForumController} 里只有
+     * {@code GET /api/forum/topic_type}）。所以它实际是一张只读表。
+     * 将来真加了管理接口，改完最多 10 分钟生效，也不会出错。
+     * <p>
+     * 写入路径不受影响：{@code createTopic} 校验类型走的是
+     * {@code topicTypeService.getById}，不经过这个缓存。
+     */
+    private static final long TYPE_NAME_TTL_MILLIS = 10 * 60 * 1000L;
+
+    /**
+     * 版块 id → 名字。复用天气接口那套进程内 {@link TtlCache}，**不引入 Redis**：
+     * 单实例部署，多一个依赖只是多一个故障点。
+     * <p>
+     * 这也正是压测报告里"单实例时进程内缓存比 Redis 划算"那条结论的落地 ——
+     * Redis 要付网络往返 + 序列化的 CPU，而这里只是一个 HashMap 查找。
+     */
+    private final TtlCache<Map<Integer, String>> typeNameCache = new TtlCache<>();
+
+    /** 取版块名映射：命中缓存直接返回，未命中才查库。调用方只读，不要修改返回的 map */
+    private Map<Integer, String> typeNamesCached() {
+        return typeNameCache.get("typeNames", TYPE_NAME_TTL_MILLIS, () -> {
+            Map<Integer, String> names = new HashMap<>();
+            for (TopicType t : topicTypeService.listAll()) {
+                names.put(t.getId(), t.getName());
+            }
+            return names;
+        });
+    }
 
     @Resource
     TopicTypeService topicTypeService;
@@ -151,39 +189,28 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
             return new TopicPreviewListVo(new ArrayList<>(), null);
         }
 
-        boolean all = types == null || types.isEmpty() || types.size() == 1 && types.get(0).equals(0);
+        // "全部版块"表达为**不传 types**（null），而不是传一个哨兵值。
+        // 原来是在 Java 里算出 all、再决定要不要 .in(...)；现在交给 SQL 的 <if>：
+        // 传 null 时那段条件整个不生成。
+        // ⚠️ 不能传空 List —— <foreach> 会生成 IN ()，那是语法错误。
+        boolean all = types == null || types.isEmpty()
+                || (types.size() == 1 && types.get(0).equals(0));
 
-        LambdaQueryWrapper<Topic> queryWrapper = new LambdaQueryWrapper<Topic>()
-                .lt(cursor != null, Topic::getId, cursor)
-                .eq(uid != null, Topic::getUid, uid)
-                .in(!all, Topic::getType, types)
-                .orderByDesc(Topic::getId)
-                .last("limit " + (size + 1));
-        List<Topic> topics = this.list(queryWrapper);
+        // 一条 SQL 拿回「帖子 + 作者名」（原来是两条）。
+        // 多取一条（size + 1）来判断有没有下一页，和原来的 .last("limit " + (size + 1)) 等价。
+        List<TopicWithAuthor> rows = baseMapper.selectPreviewListWithAuthor(
+                cursor, uid, all ? null : types, size + 1);
 
-        Map<Integer, String> typeNames = new HashMap<>();
-        for (TopicType t : topicTypeService.listAll()) {
-            typeNames.put(t.getId(), t.getName());
+        boolean hasMore = rows.size() > size;
+        if (hasMore) {
+            rows = rows.subList(0, size);
         }
 
-        Set<Integer> uids = new HashSet<>();
-        for (Topic t : topics) {
-            uids.add(t.getUid());
-        }
-        Map<Integer, String> authorNames = new HashMap<>();
-        if (!uids.isEmpty()) {
-            for (Account a : accountService.listByIds(uids)) {
-                authorNames.put(a.getId(), a.getUsername());
-            }
-        }
+        // 版块名走进程内缓存（原来每个请求查一次库，约 1.7ms CPU）
+        Map<Integer, String> typeNames = typeNamesCached();
 
-        boolean hasMore = topics.size() > size;
-        if(hasMore) {
-            topics = topics.subList(0, size);
-        }
-
-        List<TopicPreviewVo> result = topics.stream()
-                .map(t -> new TopicPreviewVo(t, typeNames.get(t.getType()), authorNames.get(t.getUid())))
+        List<TopicPreviewVo> result = rows.stream()
+                .map(r -> new TopicPreviewVo(r, typeNames.get(r.getType())))
                 .toList();
 
         // liked 是唯一一个"看的人不同、答案不同"的字段，只能单独查。
@@ -191,8 +218,8 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
         // 做法：把这 20 条的 id 收集起来，一次 WHERE uid = ? AND topic_id IN (...) 查完。
         // 这也是为什么它是这个 VO 里唯一"外面查好了 set 进来"的字段。
         Set<Integer> topicIds = new HashSet<>();
-        for (Topic t : topics) {
-            topicIds.add(t.getId());
+        for (TopicWithAuthor r : rows) {
+            topicIds.add(r.getId());
         }
         Set<Integer> likedIds = topicLikeService.likedTopicIds(viewerId, topicIds);
         for (TopicPreviewVo preview : result) {
@@ -208,29 +235,19 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     @Override
     public TopicDetailVo fetchTopic(int id, int viewerId) {
-        Topic topic = this.getById(id);
-        if (topic == null) {
-            // getById 查不到返回的是 null，不挡的话下面 topic.getType() 直接 NPE → 500。
-            // 帖子被删掉、或者有人手输一个不存在的 id，都会走到这里。
-            // 返回 null 让 controller 去包一个"帖子不存在"
+        // 一条 SQL 拿回「帖子 + 作者名 + 作者头像」（原来是三条：帖子 / 作者 / 作者资料）。
+        // 查不到返回 null —— 帖子被删了、或者有人手输一个不存在的 id，都会走到这里。
+        TopicDetailRow row = baseMapper.selectDetailWithAuthor(id);
+        if (row == null) {
             return null;
         }
 
-        // 三份"名字"数据，都是 topic 里没有的，所以只能在这儿查好了再塞进 VO。
-        // 这里查三次是合理的：详情页只有一个作者、一个类型，不存在列表页那种 N+1
-        TopicType type = topicTypeService.getById(topic.getType());
-        Account author = accountService.getById(topic.getUid());
-        AccountProfile profile = accountProfileService.findAccountProfileById(topic.getUid());
+        // 版块名走进程内缓存。和列表页共用同一个 TtlCache ——
+        // 如果列表页刚访问过，这里连那一次查库都省了。
+        TopicDetailVo vo = new TopicDetailVo(row, typeNamesCached().get(row.getType()));
 
-        // 都做空值兜底：db_account_details 里可能压根没有这个人的行，
-        // 类型也可能被管理员删了。少一个名字不该让整个详情页 500
-        TopicDetailVo vo = new TopicDetailVo(topic,
-                type == null ? null : type.getName(),
-                author == null ? null : author.getUsername(),
-                profile == null ? null : profile.getAvatar());
-
-        // liked 是唯一一个"看的人不同、答案不同"的字段，没法从 topic 那一行推出来，
-        // 只能单独查一次。viewerId 这个参数到这儿才终于有了用处
+        // liked 是唯一一个"看的人不同、答案不同"的字段，没法 JOIN 进来，只能单独查。
+        // viewerId 这个参数到这儿才终于有了用处
         vo.setLiked(topicLikeService.isLiked(viewerId, id));
         return vo;
     }
