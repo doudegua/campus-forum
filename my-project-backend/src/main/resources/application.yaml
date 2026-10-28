@@ -125,3 +125,14 @@ qweather:
   kid: ${QWEATHER_KID:T95D4A378G}
   developer-id: ${QWEATHER_DEVELOPER_ID:Q15620077C}
   prog-id: ${QWEATHER_PROG_ID:2NKPDF6EQY}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: campus-forum
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true

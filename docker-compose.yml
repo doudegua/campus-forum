@@ -403,6 +403,47 @@ services:
       - "80:80"
     networks: [app]
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: campus-forum-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [app]
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: campus-forum-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus            # 只是"先起它"，Grafana 连不上也会自己重试
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # 变量没设就直接拒绝启动，不留"先跑起来再改密码"的口子
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?请先在 .env 里设置 GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"      # 不给陌生人注册
+      GF_AUTH_ANONYMOUS_ENABLED: "false"   # 默认是 true，不关掉密码就白设了
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # 它自己的数据：管理员密码的哈希、你手点出来的面板、用户。
+      # 不挂这个卷，容器一重建全都回到初始状态。
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [ app ]
+
 # ---------------------------------------------------------------------------
 # 命名 volume —— 数据的实际存放位置
 # ---------------------------------------------------------------------------
@@ -411,6 +452,8 @@ volumes:
   redis-data:
   minio-data:
   rabbitmq-data:
+  prometheus-data:
+  grafana-data:
 
 networks:
   app:
