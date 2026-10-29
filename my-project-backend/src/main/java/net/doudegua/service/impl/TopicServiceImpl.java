@@ -3,6 +3,7 @@ package net.doudegua.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.github.benmanes.caffeine.cache.Cache;
 import jakarta.annotation.Resource;
 import net.doudegua.entity.dto.*;
 import net.doudegua.entity.vo.request.CreateTopicVo;
@@ -53,6 +54,20 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
      * Redis 要付网络往返 + 序列化的 CPU，而这里只是一个 HashMap 查找。
      */
     private final TtlCache<Map<Integer, String>> typeNameCache = new TtlCache<>();
+
+    /**
+     * 帖子详情缓存，Bean 定义见 {@link net.doudegua.config.CacheConfiguration}。
+     * <p>
+     * 这里注入的是 Caffeine 的原生 {@code Cache}，不是 Spring 的 {@code Cache} 抽象。
+     * 理由只有一个：我们要用 {@code get(key, loader)} 这个"带加载函数的原子读"，
+     * 它内部就是**单飞** —— 同一个 key 有 N 个并发请求同时未命中时，loader 只执行 1 次。
+     * Spring 的 {@code Cache.get(key)} 只提供纯读，给不了这个。
+     * <p>
+     * 缓存里存的是 {@link TopicDetailRow}（不可变的行数据），**不是** VO。
+     * 每次请求都 new 一个 VO —— 这条边界很重要，见 {@link #fetchTopic(int)} 的注释。
+     */
+    @Resource
+    Cache<Integer, Optional<TopicDetailRow>> topicDetailCache;
 
     /** 取版块名映射：命中缓存直接返回，未命中才查库。调用方只读，不要修改返回的 map */
     private Map<Integer, String> typeNamesCached() {
@@ -149,12 +164,27 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
             return "修改太频繁了，请 " + CREATE_INTERVAL_SECONDS + " 秒后再试";
         }
 
-        return this.update(new LambdaUpdateWrapper<Topic>()
+        boolean updated = this.update(new LambdaUpdateWrapper<Topic>()
                 .set(Topic::getTitle, vo.getTitle().trim())
                 .set(Topic::getType, vo.getType())
                 .set(Topic::getContent, content)
-                .eq(Topic::getId, id))
-                ? null : "修改失败，请重试";
+                .eq(Topic::getId, id));
+
+        if (!updated) {
+            return "修改失败，请重试";
+        }
+
+        // ── 主动失效 ─────────────────────────────────────────────────────
+        // 正文变了，缓存必须立刻作废：不能让用户改完还看到旧内容、干等 5 分钟 TTL。
+        // 只失效这一条，其它帖子的缓存不受影响。
+        //
+        // 反过来，点赞和发评论【故意不】失效缓存：
+        //   · 它们只改 likeCount / commentCount，差几个数字对阅读毫无影响；
+        //   · 如果连点赞都失效，热门帖子（最需要缓存的那批）的缓存会刚写进去就被作废，
+        //     命中率趋近 0。让这两个计数随 TTL 自然更新，是有意的取舍。
+        topicDetailCache.invalidate(id);
+
+        return null;
     }
 
     @Override
@@ -166,6 +196,11 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
         commentService.remove(new LambdaQueryWrapper<Comment>().eq(Comment::getTopicId, id));
         topicLikeService.remove(new LambdaQueryWrapper<TopicLike>().eq(TopicLike::getTopicId, id));
         this.removeById(id);
+
+        // 帖子没了，缓存必须跟着没 —— 否则这个 id 还会被当成"存在"返回最多 5 分钟。
+        // 放在事务中也安全：万一后面回滚，缓存只是被提前清掉，下次重新查库即可，不会读到脏数据。
+        topicDetailCache.invalidate(id);
+
         return null;
     }
 
@@ -235,23 +270,30 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     @Override
     public TopicDetailVo fetchTopic(int id) {
-        // 一条 SQL 拿回「帖子 + 作者名 + 作者头像」（原来是三条：帖子 / 作者 / 作者资料）。
-        // 查不到返回 null —— 帖子被删了、或者有人手输一个不存在的 id，都会走到这里。
-        TopicDetailRow row = baseMapper.selectDetailWithAuthor(id);
-        if (row == null) {
-            return null;
+        // ── 先走缓存 ────────────────────────────────────────────────────────
+        // get(key, loader) 的 loader 在 Caffeine 内部是**单飞**的：同一个 id 有 N 个
+        // 并发请求同时未命中，loader 只会执行 1 次，其余 N-1 个等它的结果。
+        // 这就是"缓存击穿"的解法 —— 不用自己写锁、也不用担心漏掉二次检查。
+        //
+        // 用 Optional 包一层：Caffeine 不缓存 null，不包的话"查一个不存在的帖子"
+        // 每次都会穿透到数据库（详见 CacheConfiguration 的注释）。
+        Optional<TopicDetailRow> cached = topicDetailCache.get(
+                id, key -> Optional.ofNullable(baseMapper.selectDetailWithAuthor(key)));
+
+        if (cached == null || cached.isEmpty()) {
+            return null;   // 帖子不存在。注意这个"不存在"本身也被缓存住了
         }
 
-        // 版块名走进程内缓存。和列表页共用同一个 TtlCache ——
-        // 如果列表页刚访问过，这里连那一次查库都省了。
-        //
-        // ⚠️ 这里【不再查 liked】。它已经拆到独立接口
-        // GET /api/forum/topic/{id}/liked（见 ForumController）。
-        //
-        // 这不是为了少写几行，而是为了一个性质：
-        // 【这个方法返回的对象，谁来看都一样】—— 只有满足这一点，
-        // 详情响应才能被公共缓存。之前 liked 混在里面时，缓存它会让
-        // A 的点赞状态串给 B（实测 21% 的请求出错）。
+        // ── 缓存里存的是【不可变行数据】，每次请求现造 VO ──────────────────
+        // ⚠️ 这条边界是整套改造的核心之一：
+        //    如果把 VO 放进缓存、再对缓存里那个对象 set 字段，那么并发请求会互相覆盖。
+        //    之前就这么干过 —— 缓存整个 TopicDetailVo（它当时含 liked），
+        //    实测 1175 个请求里 247 个（21%）返回了别人的点赞状态，且 HTTP 全 200、不报错。
+        //    现在 liked 被拆到独立接口（GET /api/forum/topic/{id}/liked），
+        //    VO 里再没有任何"依赖谁在看"的字段，所以缓存行数据 + 每次新建 VO 是安全的。
+        TopicDetailRow row = cached.get();
+
+        // 版块名走另一个小缓存。和列表页共用，如果列表页刚访问过，这里连那次查库都省了。
         return new TopicDetailVo(row, typeNamesCached().get(row.getType()));
     }
 
