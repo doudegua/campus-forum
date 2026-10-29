@@ -431,7 +431,7 @@ services:
       # 变量没设就直接拒绝启动，不留"先跑起来再改密码"的口子
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?请先在 .env 里设置 GRAFANA_ADMIN_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP: "false"      # 不给陌生人注册
-      GF_AUTH_ANONYMOUS_ENABLED: "false"   # 默认是 true，不关掉密码就白设了
+      GF_AUTH_ANONYMOUS_ENABLED: "false"   # 默认是 true，不关掉 密码就白设了
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       # 开启 gzip。默认是关的 —— 而 Grafana 的前端 JS 有 5MB 多，
       # 这台服务器的公网带宽只有 1Mbps 左右，不压缩的话首屏要等一分钟以上
