@@ -40,3 +40,5 @@ secrets/*
 # 起测试实例时用的外部配置覆盖，不属于项目
 e2e-verify-config.yaml
 *.local
+
+.dsh-computer-use/

@@ -216,6 +216,10 @@ async function loadTopic(id, {silent = false} = {}) {
     topic.value = null
   }
   try {
+    // liked 只依赖路由里的 id，不依赖正文返回的任何东西 —— 所以两个请求【并行】发，
+    // 不多花一次往返。如果写成"等详情回来再 await liked"，用户要多等一个 RTT。
+    const likedPending = fetchLiked(id)
+
     const {data} = await axios.get(`/api/forum/topic/${id}`, {headers: accessHeader()})
     if (data.code !== 200) {
       // "帖子不存在"也是走这里：后端把它放在 body 的 code 里，HTTP 还是 200。
@@ -223,6 +227,13 @@ async function loadTopic(id, {silent = false} = {}) {
       throw new Error(data.message)
     }
     topic.value = data.data
+
+    // 等 liked 回来再结束 loading，避免星标"先显示没赞、闪一下再变成有赞"。
+    // fetchLiked 内部自己吞掉异常（返回 null），所以它不会让整个页面失败。
+    const liked = await likedPending
+    if (liked !== null) {
+      topic.value.liked = liked
+    }
   } catch (e) {
     if (silent) {
       // 保存本身是成功的，只是回读失败。不把整页切成错误页 ——
@@ -235,6 +246,26 @@ async function loadTopic(id, {silent = false} = {}) {
     if (!silent) {
       loading.value = false
     }
+  }
+}
+
+/**
+ * 拉取"我点没点过赞"，成功返回布尔值，失败返回 null。
+ * <p>
+ * 为什么不写成"取回来顺手 set 到 topic 上"：那样它就必须在 topic 赋值之后才能调用，
+ * 只能串行。拆成"只负责取"，就能和详情请求并行发出，省掉一次往返。
+ * <p>
+ * liked 已经从详情响应里拆出来成了独立接口 —— 因为它是详情里唯一依赖
+ * "谁在看"的字段，只要它在，整个详情响应就不能被公共缓存（缓存下来的是
+ * 所有人共享的，A 点过赞 B 也会看到 true）。
+ */
+async function fetchLiked(id) {
+  try {
+    const {data} = await axios.get(`/api/forum/topic/${id}/liked`, {headers: accessHeader()})
+    return data.code === 200 ? data.data.liked : null
+  } catch (e) {
+    // 拿不到点赞状态不影响阅读，星标先按"没赞"显示
+    return null
   }
 }
 

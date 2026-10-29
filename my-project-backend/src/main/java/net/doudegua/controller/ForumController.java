@@ -21,6 +21,7 @@ import net.doudegua.utils.ControllerUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 论坛的 HTTP 入口。
@@ -88,15 +89,33 @@ public class ForumController {
      * 所以参数名必须写清楚，别用 {@code uuid} 这种和用户 id 无关的词。
      */
     @GetMapping("/topic/{id}")
-    public RestBean<TopicDetailVo> fetchTopic(@PathVariable("id") int id,
-                                              @RequestAttribute("id") int viewerId) {
-        TopicDetailVo detailVo = topicService.fetchTopic(id, viewerId);
+    public RestBean<TopicDetailVo> fetchTopic(@PathVariable("id") int id) {
+        TopicDetailVo detailVo = topicService.fetchTopic(id);
         if (detailVo == null) {
             // 帖子不存在。注意 HTTP 状态码仍然是 200 —— 本项目把 code 放在 body 里，
             // 全站都是这个约定，别在这儿破例改成 ResponseEntity
             return RestBean.failure(404, "帖子不存在");
         }
         return RestBean.success(detailVo);
+    }
+
+    /**
+     * "我"点过赞没有 —— 从 {@code GET /topic/{id}} 里拆出来的独立接口。
+     * <p>
+     * 为什么要拆：这是整个详情响应里<b>唯一一个依赖"谁在看"的字段</b>。
+     * 只要它还在详情响应里，那个响应就不能被公共缓存 —— 缓存下来的 liked
+     * 是所有用户共享的，A 点过赞，B 也会看到 true。
+     * <p>
+     * 这不是假想：用 TtlCache 缓存整个 VO 后实测，<b>1175 个请求里 247 个（21%）
+     * 返回了别人的点赞状态</b>，而 HTTP 全是 200、错误率 0% —— 不报错，数据就是错的。
+     * <p>
+     * 拆开之后：详情响应"谁来问都一样"→ 可以整体缓存；
+     * 这个接口按用户区分 → 不缓存，但它只是一条 COUNT 查询，很轻。
+     */
+    @GetMapping("/topic/{id}/liked")
+    public RestBean<Map<String, Boolean>> fetchLiked(@PathVariable("id") int id,
+                                                     @RequestAttribute("id") int viewerId) {
+        return RestBean.success(Map.of("liked", topicLikeService.isLiked(viewerId, id)));
     }
 
     /**

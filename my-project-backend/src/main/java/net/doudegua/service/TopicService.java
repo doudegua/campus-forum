@@ -14,7 +14,7 @@ import net.doudegua.entity.vo.response.TopicPreviewListVo;
  * 比如发帖要校验类型，那属于帖子的业务，所以方法在这里，内部去问 {@link TopicTypeService}。
  * <p>
  * 方法返回值遵循本项目约定：null 表示成功，非空字符串是给用户看的失败原因。
- * 但 {@link #fetchTopicList} 不一样：它查的不是"成功/失败"，而是一份数据，
+ * 但 {@link # fetchTopicList} 不一样：它查的不是"成功/失败"，而是一份数据，
  * 所以直接返回对象；出错就抛异常，让全局异常处理器去管。
  */
 public interface
@@ -43,7 +43,12 @@ TopicService extends IService<Topic> {
      * 两个参数都是 int，调用时极容易传反 —— 所以名字必须能一眼分清。
      * {@code id} 是要看的帖子，{@code viewerId} 是"谁在看"（从 JWT 里来的，不是请求参数）。
      * 后者现在还没被用到，等点赞表建好之后它要用来算 {@code liked}。
+     * <p>
+     * ⚠️ 改造后这个方法<b>只收 id，不再收 viewerId</b>：{@code liked} 已经拆到独立接口
+     * {@code GET /api/forum/topic/{id}/liked}。签名去掉 viewerId 是刻意的 ——
+     * 让"这个接口不依赖观看者"在类型上就看得出来，而不是靠注释提醒。
+     * 只有响应与观看者无关，它才能被公共缓存。
      */
-    TopicDetailVo fetchTopic(int id, int viewerId);
+    TopicDetailVo fetchTopic(int id);
 
 }

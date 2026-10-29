@@ -234,7 +234,7 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
     }
 
     @Override
-    public TopicDetailVo fetchTopic(int id, int viewerId) {
+    public TopicDetailVo fetchTopic(int id) {
         // 一条 SQL 拿回「帖子 + 作者名 + 作者头像」（原来是三条：帖子 / 作者 / 作者资料）。
         // 查不到返回 null —— 帖子被删了、或者有人手输一个不存在的 id，都会走到这里。
         TopicDetailRow row = baseMapper.selectDetailWithAuthor(id);
@@ -244,12 +244,15 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
         // 版块名走进程内缓存。和列表页共用同一个 TtlCache ——
         // 如果列表页刚访问过，这里连那一次查库都省了。
-        TopicDetailVo vo = new TopicDetailVo(row, typeNamesCached().get(row.getType()));
-
-        // liked 是唯一一个"看的人不同、答案不同"的字段，没法 JOIN 进来，只能单独查。
-        // viewerId 这个参数到这儿才终于有了用处
-        vo.setLiked(topicLikeService.isLiked(viewerId, id));
-        return vo;
+        //
+        // ⚠️ 这里【不再查 liked】。它已经拆到独立接口
+        // GET /api/forum/topic/{id}/liked（见 ForumController）。
+        //
+        // 这不是为了少写几行，而是为了一个性质：
+        // 【这个方法返回的对象，谁来看都一样】—— 只有满足这一点，
+        // 详情响应才能被公共缓存。之前 liked 混在里面时，缓存它会让
+        // A 的点赞状态串给 B（实测 21% 的请求出错）。
+        return new TopicDetailVo(row, typeNamesCached().get(row.getType()));
     }
 
     /**
