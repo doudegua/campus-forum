@@ -19,6 +19,8 @@ import net.doudegua.utils.FlowUtils;
 import net.doudegua.utils.HtmlSanitizer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.*;
 
@@ -203,8 +205,23 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
         this.removeById(id);
 
         // 帖子没了，缓存必须跟着没 —— 否则这个 id 还会被当成"存在"返回最多 5 分钟。
-        // 放在事务中也安全：万一后面回滚，缓存只是被提前清掉，下次重新查库即可，不会读到脏数据。
-        topicDetailCache.invalidate(id);
+        //
+        // ⚠️ 关键：失效必须放在【事务提交之后】，不能直接写在这行下面。
+        //    提前清会出现这个时序：
+        //      T1  DELETE（未提交 —— 按 MVCC，别人这会儿还看得见这一行）
+        //      T1  cache.invalidate(id)        ← 缓存空了
+        //      请求 X 到达 → 缓存未命中 → 查库 → 读到【旧行】→ 把旧行写回缓存
+        //      T1  COMMIT（库里已经没了）
+        //      → 缓存里留着一条已删除的帖子，最长 5 分钟
+        //
+        //    afterCommit 保证"清缓存"发生在 DB 真正变更【之后】，彻底避开这个窗口。
+        //    这个坑叫「cache invalidate 与 transaction commit 的时序」，是缓存 + 事务组合的经典陷阱。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                topicDetailCache.invalidate(id);
+            }
+        });
 
         return null;
     }

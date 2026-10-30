@@ -1,0 +1,34 @@
+-- ===========================================================================
+-- 004 —— db_topic 加时间索引（2026-10-30）
+--
+-- ⚠️ 同 001~003：**全新库不要跑这个文件**。schema.sql 里 db_topic 的建表语句
+--    已经带了 idx_time，再跑会 ERROR 1061 (Duplicate key name) 并中止。
+--    只有"老库升级"才需要跑一次。
+--
+-- 手动跑一次：
+--     mysql -u root test < src/main/resources/db/migration/004-idx-time.sql
+--
+-- 为什么必须放迁移而不是 schema.sql：CREATE INDEX 不幂等（MySQL 8 没有
+-- IF NOT EXISTS），每次启动重放会报错让应用起不来。
+-- ===========================================================================
+
+-- 列表页在【不带任何筛选条件】时（首页），查询长这样：
+--     SELECT ... FROM db_topic ORDER BY time DESC LIMIT 20
+--
+-- 已有的两个复合索引都以 uid / type 打头：
+--     idx_uid_time  (uid, time)      ← 要有 uid 条件才用得上
+--     idx_type_time (type, time)     ← 要有 type 条件才用得上
+-- 所以首页这条"没有 WHERE"的查询一个都用不了，MySQL 只能全表扫描 + filesort。
+--
+-- 实测（1 万条帖子、100 并发、60 秒）：
+--   加之前  type=ALL    rows=10062  Extra=Using filesort
+--           吞吐 47.5 req/s   P50 1960ms  P95 3160ms  P99 3530ms
+--   加之后  type=index  rows=20     Extra=Backward index scan
+--           吞吐 63.5 req/s   P50 1480ms  P95 2240ms  P99 2640ms
+--
+--   吞吐 +33.8%，P50 −24.5%，P95 −29.1%，错误率两侧均为 0%
+--
+-- 顺带记一个容易混淆的对照：详情页那条 WHERE id = ? 走主键、EXPLAIN 显示
+-- actual time ≈ 0.1ms —— 对详情页来说"缺索引"的假设是【错的】。
+-- 同一个库、同一张表，两种查询的结论完全相反。不能用一个结论覆盖另一处。
+CREATE INDEX idx_time ON db_topic (time);
