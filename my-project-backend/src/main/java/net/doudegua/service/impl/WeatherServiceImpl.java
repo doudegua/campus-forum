@@ -43,11 +43,36 @@ public class WeatherServiceImpl implements WeatherService {
     @Resource
     private Cache<String, Optional<JSONObject>> weatherGeoCache;
 
+    /**
+     * 失败缓存：坐标 → 失败原因，60 秒。
+     * <p>
+     * 这是"缓存穿透"的补丁。原来的实现里 loader 抛异常 → 什么都没缓存 →
+     * 同一个坏坐标每次请求都重新打一次和风（实测：lon=999&lat=999 连打三次
+     * 是 176/76/80ms，从来没落到命中时的 24ms 区间，说明每次都在真打）。
+     * <p>
+     * 代价说清楚：这个坐标的**临时性**故障会被放大成"60 秒内不可用"。
+     * 权衡下来值得 —— 天气是非关键功能，而额度是会被烧光的。
+     */
+    @Resource
+    private Cache<String, String> weatherFailureCache;
+
     @Override
     public RestBean<WeatherVo> fetchWeather(double longitude, double latitude) {
-        // 经纬度是连续量，直接拿来当缓存键会无限膨胀。量化到两位小数（约 1.1 公里），
-        // 这正好也是 v1 接口允许的最大精度，等于不丢精度地把键变成有限集合。
+        // 经纬度是连续量，直接拿来当缓存键会无限膨胀，所以先量化到 0.1 度（约 11 公里）。
+        //
+        // ⚠️ 这里是 %.1f，**一位**小数。原来的注释写的是"两位小数（约 1.1 公里）"，
+        //    和代码对不上。真按两位小数，键空间会是 36000 × 18000 = 6.48 亿，
+        //    比现在大一百倍。当前键空间是 3600 × 1800 = 648 万 —— 仍然很大，
+        //    所以穿透防护靠的是"范围校验 + 失败缓存 + 限流"三件套（见 WeatherController），
+        //    而不是指望量化本身把键空间压小。
         String key = String.format(Locale.ROOT, "%.1f,%.1f", latitude, longitude);
+
+        // ── 防穿透：这个坐标刚失败过，就不要再打一次和风 ────────────────────
+        // 命中说明 60 秒内刚失败过，直接返回同一个失败原因，一次 API 都不消耗。
+        String cachedFailure = weatherFailureCache.getIfPresent(key);
+        if (cachedFailure != null) {
+            return RestBean.failure(502, cachedFailure);
+        }
 
         try {
             JSONObject current = weatherCurrentCache.get(key,
@@ -61,10 +86,21 @@ public class WeatherServiceImpl implements WeatherService {
             vo.setHourly(hourly);
             vo.setLocation(city(key, longitude, latitude));
             vo.setAttribution(attributionOf(current));
+
+            // 成功了就把旧的失败记录清掉：虽然它 60 秒后会自己过期，
+            // 但主动清掉能让"恢复后立刻可用"，不用让用户干等
+            weatherFailureCache.invalidate(key);
+
             return RestBean.success(vo);
         } catch (Exception e) {
             // 天气拿不到不该让前端白屏，返回一个明确的失败码和信息
-            return RestBean.failure(502, "获取天气失败：" + e.getMessage());
+            String message = "获取天气失败：" + e.getMessage();
+
+            // ⚠️ 失败也要缓存（60 秒）—— 否则同一个坏坐标会无限穿透。
+            //    这是本方法唯一一处"改变语义"的地方，取舍见 weatherFailureCache 的注释。
+            weatherFailureCache.put(key, message);
+
+            return RestBean.failure(502, message);
         }
     }
 

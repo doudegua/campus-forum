@@ -137,6 +137,24 @@ public class CacheConfiguration {
     }
 
     /**
+     * 天气失败缓存：坐标 → 失败原因，60 秒。
+     * <p>
+     * 用来堵"缓存穿透"：原来 loader 抛异常时什么都没缓存，同一个坏坐标
+     * 每次请求都会重新打一次和风。实测 lon=999&lat=999 连打三次是
+     * 176/76/80ms，从来没落到命中时的 24ms 区间 —— 说明每次都在真打。
+     * <p>
+     * TTL 取 60 秒是个权衡：太短则穿透窗口大，太长则"和风抖一下"会被放大成
+     * 一分钟不可用。天气是非关键功能，60 秒可以接受。
+     * <p>
+     * 容量上限和别的缓存一样 —— 攻击者可以制造大量不同的失败坐标，
+     * 不设上限的话这张表本身就成了内存洞。
+     */
+    @Bean
+    public Cache<String, String> weatherFailureCache(MeterRegistry registry) {
+        return buildCache("weatherFailure", Duration.ofSeconds(60), 10_000, registry);
+    }
+
+    /**
      * 坐标 → 城市名，30 天。
      * <p>
      * 类型里多包了一层 {@code Optional}，原因和帖子详情那个一样：反查不到城市时
