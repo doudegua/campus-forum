@@ -7,6 +7,7 @@ import net.doudegua.entity.dto.TopicWithAuthor;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -92,4 +93,23 @@ public interface TopicMapper extends BaseMapper<Topic> {
             WHERE t.id = #{id}
             """)
     TopicDetailRow selectDetailWithAuthor(@Param("id") int id);
+
+    /**
+     * 把 Redis 里攒下的点赞增量写回 {@code db_topic.like_count}。
+     * <p>
+     * <b>为什么不用 {@code LambdaUpdateWrapper.setSql("like_count = like_count + " + delta)}</b>：
+     * {@code setSql} 是往 SET 子句里塞一段【原始 SQL】，不支持占位符。delta 现在
+     * 确实是 Redis 里的数字，但 Redis 是可以被人手工写的 —— 一旦拼进 SQL，
+     * 就等于给计数落库开了一条注入路径。参数化之后 {@code #{delta}} 会变成
+     * JDBC 的 {@code ?}，它永远只能是一个数，拼不出语法来。代价只是多写这一个方法。
+     * <p>
+     * <b>为什么加法要在 SQL 里做</b>：{@code like_count = like_count + ?} 由数据库
+     * 读旧值、加、写回，是一条语句内的原子操作。如果先查出旧值、在 Java 里加好
+     * 再 UPDATE 成绝对值，两次落库交错时会互相覆盖 —— 那正是原来的行锁要防的事。
+     * <p>
+     * 返回值是影响行数：正常是 1；帖子在这期间被删掉则是 0。0 不是错误，
+     * 调用方照样应该把脏标记清掉，否则这个 id 会永远留在待办集合里。
+     */
+    @Update("UPDATE db_topic SET like_count = like_count + #{delta} WHERE id = #{id}")
+    int addLikeCount(@Param("delta") long delta, @Param("id") int id);
 }
