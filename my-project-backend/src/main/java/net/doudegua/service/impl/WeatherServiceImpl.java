@@ -2,39 +2,46 @@ package net.doudegua.service.impl;
 
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.github.benmanes.caffeine.cache.Cache;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.RestBean;
 import net.doudegua.entity.vo.response.WeatherVo;
 import net.doudegua.service.QWeatherClient;
 import net.doudegua.service.WeatherService;
-import net.doudegua.utils.TtlCache;
 import org.springframework.stereotype.Service;
 
 import java.util.Locale;
+import java.util.Optional;
 
 @Slf4j
 @Service
 public class WeatherServiceImpl implements WeatherService {
 
-    /**
-     * 实时天气缓存 30 分钟。这个 TTL 直接决定每月请求量：
-     * 10 分钟 TTL 是 144 次/天/键，30 分钟降到 48 次，是最省额度的一刀。
-     * 免费额度是每月 5 万次，天气和 GeoAPI 共用同一个池子。
-     */
-    private static final long CURRENT_TTL = 30 * 60 * 1000L;
-    /** 小时预报缓存 60 分钟 */
-    private static final long HOURLY_TTL = 60 * 60 * 1000L;
-    /** 坐标到城市名的映射缓存 30 天，行政区划基本不会变，摊下来成本趋近于零 */
-    private static final long GEO_TTL = 30L * 24 * 60 * 60 * 1000L;
     private static final int FORECAST_HOURS = 24;
 
     @Resource
     private QWeatherClient client;
 
-    private final TtlCache<JSONObject> currentCache = new TtlCache<>();
-    private final TtlCache<JSONArray> hourlyCache = new TtlCache<>();
-    private final TtlCache<JSONObject> geoCache = new TtlCache<>();
+    /*
+     * 三个缓存的 Bean 定义（含 TTL）都在 CacheConfiguration 里 —— 这里只注入。
+     *
+     * 为什么从 TtlCache 换成 Caffeine：原来的实现在条目超过 512 之后，
+     * 每次 put 都会全表扫描一遍找过期项（O(n)），而且完全没有容量上限。
+     * 这三个缓存的键是量化后的坐标，键空间 648 万，条目很容易越过 512。
+     *
+     * 注意 geoCache 的值类型是 Optional<JSONObject>：Caffeine 不缓存 null，
+     * 而"这个地方反查不到城市"是一个需要被缓存住的正常结果
+     * （不缓存的话每次都会重新打一次 GeoAPI，白烧额度）。
+     */
+    @Resource
+    private Cache<String, JSONObject> weatherCurrentCache;
+
+    @Resource
+    private Cache<String, JSONArray> weatherHourlyCache;
+
+    @Resource
+    private Cache<String, Optional<JSONObject>> weatherGeoCache;
 
     @Override
     public RestBean<WeatherVo> fetchWeather(double longitude, double latitude) {
@@ -43,11 +50,11 @@ public class WeatherServiceImpl implements WeatherService {
         String key = String.format(Locale.ROOT, "%.1f,%.1f", latitude, longitude);
 
         try {
-            JSONObject current = currentCache.get(key, CURRENT_TTL,
-                    () -> client.current(latitude, longitude));
+            JSONObject current = weatherCurrentCache.get(key,
+                    k -> client.current(latitude, longitude));
 
-            JSONArray hourly = hourlyCache.get(key, HOURLY_TTL,
-                    () -> client.hourly(latitude, longitude, FORECAST_HOURS).getJSONArray("hours"));
+            JSONArray hourly = weatherHourlyCache.get(key,
+                    k -> client.hourly(latitude, longitude, FORECAST_HOURS).getJSONArray("hours"));
 
             WeatherVo vo = new WeatherVo();
             vo.setNow(current);
@@ -64,10 +71,13 @@ public class WeatherServiceImpl implements WeatherService {
     /** 城市名只是锦上添花，反查失败不该拖垮整个天气接口。但失败原因必须记下来，否则查都没法查。 */
     private JSONObject city(String key, double longitude, double latitude) {
         try {
-            return geoCache.get(key, GEO_TTL, () -> {
+            return weatherGeoCache.get(key, k -> {
                 JSONArray locations = client.cityLookup(longitude, latitude).getJSONArray("location");
-                return locations == null || locations.isEmpty() ? null : locations.getJSONObject(0);
-            });
+                JSONObject found = locations == null || locations.isEmpty()
+                        ? null : locations.getJSONObject(0);
+                // 包成 Optional 才能把"没有城市"这个结果也缓存住（Caffeine 不缓存 null）
+                return Optional.ofNullable(found);
+            }).orElse(null);
         } catch (Exception e) {
             log.warn("城市反查失败，卡片将只显示天气不显示地名：{}", e.getMessage());
             return null;

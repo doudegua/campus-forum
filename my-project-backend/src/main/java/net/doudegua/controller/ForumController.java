@@ -18,6 +18,7 @@ import net.doudegua.service.TopicLikeService;
 import net.doudegua.service.TopicService;
 import net.doudegua.service.TopicTypeService;
 import net.doudegua.utils.ControllerUtils;
+import net.doudegua.utils.FlowUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -48,6 +49,26 @@ public class ForumController {
 
     @Resource
     TopicLikeService topicLikeService;
+
+    @Resource
+    FlowUtils flowUtils;
+
+    /**
+     * 点赞的频率上限：每个用户每 N 秒只允许一次。
+     * <p>
+     * 这里用 {@code limitOnceCheck}（{@code SET NX EX}）是故意的 —— 它给出的语义就是
+     * "N 秒内只认第一次"，正好对应"每秒最多点一次赞"。
+     * <p>
+     * 阈值取 1 秒的理由：前端有 400ms 防抖，正常人连点两次也不会在一秒内完成；
+     * 而脚本会被硬压到 1 次/秒，降了三个数量级。
+     * 小于 1 秒会误伤手快的用户，大于 1 秒挡不住刷。
+     */
+    private static final int LIKE_INTERVAL_SECONDS = 1;
+
+    /** 点赞/取消赞共用的限流键。<b>两个动作共用一把锁</b>：反复横跳同样是在刷接口。 */
+    private boolean likeTooFrequent(int uid) {
+        return !flowUtils.limitOnceCheck("like:" + uid, LIKE_INTERVAL_SECONDS);
+    }
 
     /** 帖子类型列表，给发帖抽屉里那个下拉框用 */
     @GetMapping("/topic_type")
@@ -180,6 +201,12 @@ public class ForumController {
     @PostMapping("/topic/{topicId}/like")
     public RestBean<TopicLikeVo> like(@PathVariable("topicId") int topicId,
                                       @RequestAttribute("id") int uid) {
+        // 发帖 / 编辑 / 评论 / 验证码都有 limitOnceCheck，唯独点赞原来没有 ——
+        // 一个脚本可以无限打，每次点赞 3~4 条 SQL，纯粹白压数据库。
+        // 注意这里用 body 里的 code（HTTP 仍是 200），和全站约定保持一致。
+        if (likeTooFrequent(uid)) {
+            return RestBean.failure(429, "点赞太频繁，请稍后再试");
+        }
         TopicLikeVo vo = topicLikeService.like(uid, topicId);
         if (vo == null) {
             return RestBean.failure(404, "帖子不存在");
@@ -197,6 +224,10 @@ public class ForumController {
     @DeleteMapping("/topic/{topicId}/like")
     public RestBean<TopicLikeVo> unlike(@PathVariable("topicId") int topicId,
                                         @RequestAttribute("id") int uid) {
+        // 和点赞共用同一个限流键：反复点赞/取消横跳，同样是在刷接口
+        if (likeTooFrequent(uid)) {
+            return RestBean.failure(429, "操作太频繁，请稍后再试");
+        }
         TopicLikeVo vo = topicLikeService.unlike(uid, topicId);
         if (vo == null) {
             return RestBean.failure(404, "帖子不存在");

@@ -17,7 +17,6 @@ import net.doudegua.service.AccountProfileService;
 import net.doudegua.utils.Const;
 import net.doudegua.utils.FlowUtils;
 import net.doudegua.utils.HtmlSanitizer;
-import net.doudegua.utils.TtlCache;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,17 +42,23 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
      * <p>
      * 写入路径不受影响：{@code createTopic} 校验类型走的是
      * {@code topicTypeService.getById}，不经过这个缓存。
+     * <p>
+     * TTL 常量本身已移到 {@code CacheConfiguration#typeNamesCache}，统一管理。
      */
-    private static final long TYPE_NAME_TTL_MILLIS = 10 * 60 * 1000L;
 
     /**
-     * 版块 id → 名字。复用天气接口那套进程内 {@link TtlCache}，**不引入 Redis**：
-     * 单实例部署，多一个依赖只是多一个故障点。
+     * 版块 id → 名字，Bean 定义见 {@link net.doudegua.config.CacheConfiguration}。
      * <p>
+     * **不引入 Redis**：单实例部署，多一个依赖只是多一个故障点。
      * 这也正是压测报告里"单实例时进程内缓存比 Redis 划算"那条结论的落地 ——
-     * Redis 要付网络往返 + 序列化的 CPU，而这里只是一个 HashMap 查找。
+     * Redis 要付网络往返 + 序列化的 CPU，而这里只是一个 Map 查找。
+     * <p>
+     * 从 {@code TtlCache} 换成 Caffeine 主要是为了一致性（全项目只剩一种缓存实现，
+     * 旧的才能安心废弃）。这处原本其实没出过问题 —— 它只有一个字面量键，
+     * 永远走不到 TtlCache 那个 {@code size() > 512} 的 O(n) 分支。
      */
-    private final TtlCache<Map<Integer, String>> typeNameCache = new TtlCache<>();
+    @Resource
+    Cache<String, Map<Integer, String>> typeNameCache;
 
     /**
      * 帖子详情缓存，Bean 定义见 {@link net.doudegua.config.CacheConfiguration}。
@@ -71,7 +76,7 @@ public class TopicServiceImpl extends ServiceImpl<TopicMapper, Topic> implements
 
     /** 取版块名映射：命中缓存直接返回，未命中才查库。调用方只读，不要修改返回的 map */
     private Map<Integer, String> typeNamesCached() {
-        return typeNameCache.get("typeNames", TYPE_NAME_TTL_MILLIS, () -> {
+        return typeNameCache.get("typeNames", key -> {
             Map<Integer, String> names = new HashMap<>();
             for (TopicType t : topicTypeService.listAll()) {
                 names.put(t.getId(), t.getName());

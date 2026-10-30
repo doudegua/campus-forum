@@ -74,19 +74,24 @@ public class TopicLikeServiceImpl extends ServiceImpl<TopicLikeMapper, TopicLike
             topicMapper.update(null, new LambdaUpdateWrapper<Topic>()
                     .setSql("like_count = like_count + 1")
                     .eq(Topic::getId, topicId));   // WHERE id = ?
+
+            // ── 第 4 步：把权威的新状态报回去 ────────────────────────────
+            // 计数真的变了，重查一次拿权威值（并发时别人可能也加过，本地算 old+1 会少报）
+            return new TopicLikeVo(true, topicMapper.selectById(topicId).getLikeCount());
         }
 
-        // ── 第 4 步：把权威的新状态报回去 ────────────────────────────────
-        // 为什么重新查一次：第 1 步拿到的那个 topic 对象是"改之前"的快照，
-        // 它的 likeCount 是旧的。而且并发时别人可能也加过，本地算 old+1 会少报。
-        // 多这一次查询换来"前端看到的数字永远和服务端一致"，值。
-        return new TopicLikeVo(true, topicMapper.selectById(topicId).getLikeCount());
+        // insertIgnore 返回 0 —— 早就点过了，like_count 一点没动。
+        // 所以第 1 步那个快照里的 likeCount 就是答案，不用再重查一次。
+        // 重复点赞因此从 4 条 SQL 降到 3 条。
+        return new TopicLikeVo(true, topic.getLikeCount());
     }
 
     @Override
     @Transactional
     public TopicLikeVo unlike(int uid, int topicId) {
-        if (topicMapper.selectById(topicId) == null) {
+        // 和第 1 步一样，先把快照留下来 —— 后面"重复取消"那条路径要用它的 likeCount
+        Topic topic = topicMapper.selectById(topicId);
+        if (topic == null) {
             return null;
         }
 
@@ -112,9 +117,13 @@ public class TopicLikeServiceImpl extends ServiceImpl<TopicLikeMapper, TopicLike
             topicMapper.update(null, new LambdaUpdateWrapper<Topic>()
                     .setSql("like_count = like_count - 1")
                     .eq(Topic::getId, topicId));
+
+            // 计数真的变了，重查一次拿权威值
+            return new TopicLikeVo(false, topicMapper.selectById(topicId).getLikeCount());
         }
 
-        return new TopicLikeVo(false, topicMapper.selectById(topicId).getLikeCount());
+        // 一行都没删 = 本来就没点过 = 计数没动 → 用快照里的值，省一条 SQL
+        return new TopicLikeVo(false, topic.getLikeCount());
     }
 
     @Override
