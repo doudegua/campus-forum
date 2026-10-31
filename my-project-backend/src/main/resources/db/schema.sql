@@ -159,3 +159,45 @@ CREATE TABLE IF NOT EXISTS db_topic_like (
     --   2. 主键本身是索引，顺带就是"查我有没有点过这条"的索引，不用再建一个
     PRIMARY KEY (uid, topic_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='帖子点赞';
+
+-- ---------------------------------------------------------------------------
+-- 抢课（Redis + MQ 高并发练习）
+--
+-- 两张表的分工和点赞那两张**表面像、本质不同**：
+--   db_course_selection 是权威关系（谁选上了），一条都不能丢；
+--   db_course.selected_count 是账本上的已选人数，但它是**由带条件的 UPDATE 维护的**，
+--   不是"可以先扣 Redis 再慢慢回写"的派生值。
+--   —— 点赞计数丢几个能重算；选课人数错了就是超卖。这条边界在于
+--      "重算"在并发窗口里本身就是错的（重算出来的余量会放过一次超卖）。
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS db_course (
+    id             INT          NOT NULL AUTO_INCREMENT,
+    name           VARCHAR(128) NOT NULL                COMMENT '课程名',
+    teacher        VARCHAR(64)  NOT NULL DEFAULT ''     COMMENT '授课教师',
+    credit         DECIMAL(3,1) NOT NULL DEFAULT 0.0    COMMENT '学分',
+    capacity       INT          NOT NULL                COMMENT '名额上限，运行期不允许改',
+    -- 冗余计数列。唯一允许的写法是
+    --   UPDATE db_course SET selected_count = selected_count + 1
+    --   WHERE id = ? AND selected_count < capacity
+    -- 用"先查再 +1 写回"在并发下会丢更新；用 Redis 增量异步回写会超卖。
+    selected_count INT          NOT NULL DEFAULT 0      COMMENT '已选人数（由条件 UPDATE 维护）',
+    select_start   DATETIME     NOT NULL                COMMENT '选课开始时间（本轮骨架暂不校验）',
+    select_end     DATETIME     NOT NULL                COMMENT '选课结束时间（本轮骨架暂不校验）',
+    PRIMARY KEY (id),
+    -- 同名课程在演示里视为同一门；真实系统应该按 (name, teacher, term) 唯一
+    UNIQUE KEY uk_course_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='课程';
+
+CREATE TABLE IF NOT EXISTS db_course_selection (
+    uid        INT      NOT NULL COMMENT '选课学生 db_account.id',
+    course_id  INT      NOT NULL COMMENT '课程 db_course.id',
+    status     TINYINT  NOT NULL DEFAULT 1 COMMENT '1 已选；0/2 留给退课和候补，本轮不用',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- 复合主键：和 db_topic_like 同一个思路。"一个人一门课只能选一次"这条规则
+    -- 由数据库保证，应用层不用先查再插（那中间有并发窗口）。
+    -- 它还是 MQ 幂等消费的支点：重复消息 INSERT IGNORE 影响 0 行，就不再给计数 +1。
+    PRIMARY KEY (uid, course_id),
+    -- 查"这门课选了谁"、对账 COUNT(*) 都走这个索引
+    KEY idx_course_uid (course_id, uid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='选课记录（权威关系）';
