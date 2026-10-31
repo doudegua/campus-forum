@@ -23,6 +23,22 @@ public class Const {
     public static final String FLOW_IMAGE_BYTES = "flow:image:bytes:";
 
     /**
+     * 还没落库的点赞增量，键形如 {@code like:delta:123}，值是数字，可正可负。
+     * <p>
+     * 故意不设 TTL：它不是缓存，是"还没写进数据库的待办"。设了 TTL 就等于
+     * 到点自动少算几个赞 —— 宁可让它一直留着等落库，也不要偷偷丢掉。
+     */
+    public static final String LIKE_DELTA = "like:delta:";
+
+    /**
+     * 有未落库增量的帖子 id 集合。
+     * <p>
+     * 落库任务靠它拿待办清单，而不是 {@code SCAN like:delta:*} 遍历整个 keyspace。
+     * 里面只会有"还有增量没写回"的帖子，正常情况下很小。
+     */
+    public static final String LIKE_DIRTY = "like:dirty";
+
+    /**
      * 当前登录用户 id 在 request attribute 里的键名。
      * <p>
      * 必须和 JwtAuthorizeFilter 里 setAttribute 用的名字一致，否则读的人永远拿到 null。

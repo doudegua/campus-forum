@@ -3,6 +3,7 @@ package net.doudegua.entity.vo.response;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import net.doudegua.entity.dto.Topic;
+import net.doudegua.entity.dto.TopicWithAuthor;
 
 import java.util.Date;
 
@@ -49,6 +50,23 @@ public class TopicPreviewVo {
         this.title = topic.getTitle();
         this.typeName = typeName;
         this.authorName = authorName;
+        this.time = topic.getTime();
+        this.commentCount = topic.getCommentCount();
+        this.likeCount = topic.getLikeCount();
+    }
+
+    /**
+     * 列表页现在的构造方式：作者名已经在同一条 SQL 里 JOIN 出来了，
+     * 不再需要外面单独查一次 {@code db_account} 再传进来。
+     * <p>
+     * 保留上面那个老构造器是有意的 —— 用户主页等场景如果以后需要
+     * "只有 Topic 没有 JOIN" 的路径，还能用。
+     */
+    public TopicPreviewVo(TopicWithAuthor topic, String typeName) {
+        this.id = topic.getId();
+        this.title = topic.getTitle();
+        this.typeName = typeName;
+        this.authorName = topic.getAuthorName();
         this.time = topic.getTime();
         this.commentCount = topic.getCommentCount();
         this.likeCount = topic.getLikeCount();

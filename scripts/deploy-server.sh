@@ -68,6 +68,16 @@ if [ -f .env ]; then
     if grep -qE '^DB_PASSWORD=\s*$' .env; then
         warn ".env 里 DB_PASSWORD 是空的"
     fi
+    if grep -qE '^GRAFANA_ADMIN_PASSWORD=.+' .env; then
+        :                                  # 已有值，绝不动
+    elif grep -q '^GRAFANA_ADMIN_PASSWORD=' .env; then
+        # .env.example 里的空占位 → 就地填，避免留下两条同名变量
+        sed -i "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)|" .env
+        echo "已生成 GRAFANA_ADMIN_PASSWORD"
+    else
+        printf '\nGRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> .env
+        echo "已生成 GRAFANA_ADMIN_PASSWORD"
+    fi
 else
     [ -f .env.example ] || die "既没有 .env 也没有 .env.example，是不是不在项目根目录？"
     cp .env.example .env

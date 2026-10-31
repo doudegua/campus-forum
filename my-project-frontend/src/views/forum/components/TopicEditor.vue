@@ -10,7 +10,17 @@ import {compressImage} from "@/utils/image";
 import {vHidePlaceholderWhileComposing} from "@/utils/hidePlaceholder";
 
 const props = defineProps({
-  modelValue: {type: Boolean, default: false}
+  modelValue: {type: Boolean, default: false},
+  /**
+   * 要编辑的帖子。null = 发帖（默认），非 null = 编辑这一条。
+   * <p>
+   * <b>这一个 prop 同时决定三件事</b>：标题和按钮文案、提交时打到哪个接口、
+   * 以及**要不要碰草稿**（见下面 saveDraft 那段，那是本组件最要紧的一条隔离）。
+   * <p>
+   * 需要 {@code type}（类型 id，不是 typeName）、{@code title}、{@code content}
+   * 三个字段 —— 正好是详情接口返回的形状。
+   */
+  topic: {type: Object, default: null}
 });
 
 const emit = defineEmits(['update:modelValue', 'submit']);
@@ -52,6 +62,33 @@ const visible = computed({
   get: () => props.modelValue,
   set: value => emit('update:modelValue', value)
 });
+
+/** 是不是在编辑已有的帖子。发帖和编辑共用这一个抽屉，全靠它区分 */
+const isEdit = computed(() => props.topic != null)
+
+/**
+ * 把要编辑的帖子填进表单。父组件是"先给 topic，再打开"，所以这里不能写在
+ * onMounted 里 —— 那时抽屉还没开过，填进去也没人看得到。
+ * <p>
+ * 交给 watch(modelValue) 在**每次打开时**填：抽屉是可以反复开关的，
+ * 第二次打开的是另一条帖子，onMounted 早就跑完了。
+ * <p>
+ * 关于 content 的时序：赋值时 Quill 实例可能还不存在（抽屉第一次打开时
+ * el-drawer 才渲染内容），那时 @vueup/vue-quill 的 content watcher 会直接
+ * return。但这不会丢 —— Quill 初始化完自己会 setContents(props.content)，
+ * 用的正是这一刻赋的值。两条路都覆盖到了，所以同步赋值就够，不用等 nextTick。
+ */
+function applyTopic(t) {
+  topicType.value = t.type ?? ''
+  title.value = t.title ?? ''
+  content.value = t.content ?? ''
+}
+
+watch(() => props.modelValue, open => {
+  if (open && isEdit.value) {
+    applyTopic(props.topic)
+  }
+})
 
 /* ---------------- 编辑器与图片上传 ---------------- */
 
@@ -211,7 +248,26 @@ const SAVE_DELAY = 500;
 
 let saveTimer = null;
 
+/* ---------------- 草稿的读写必须在发帖/编辑之间**完全隔离** ----------------
+
+   下面三个函数都带着同一句 `if (isEdit.value) return;`，这不是重复，是**唯一的**保险：
+   草稿的 key 只有一个（DRAFT_KEY），而它是给"新帖"用的。
+
+   编辑模式下不隔离会发生两件真正丢数据的坏事：
+     1. 打开编辑 → loadDraft() 把你存档的新帖草稿塞进编辑器，
+        你看到的"帖子原文"其实是你没发完的草稿；
+     2. 关掉编辑 → saveDraft() 把**正在编辑的帖子内容**写进那个 key，
+        你的新帖草稿被静默覆盖，而且不可恢复。
+   再加上 resetForm() 里那句 clearDraft()，保存一次编辑就把草稿整个删了。
+
+   所以判据不是"要不要保存"，而是"**这份内容是哪个任务的**"。
+   只要 isEdit 为真，草稿机制和这次编辑没有任何关系，一律不碰。
+----------------------------------------------- */
+
 function loadDraft() {
+  if (isEdit.value) {
+    return;
+  }
   const raw = localStorage.getItem(DRAFT_KEY);
   if (!raw) {
     return;
@@ -225,6 +281,9 @@ function loadDraft() {
 }
 
 function saveDraft() {
+  if (isEdit.value) {
+    return;
+  }
   // 用 hasContent 而不是 content.value.trim()：Quill 的空文档是 <p><br></p>，
   // 字符串非空但没有任何实质内容，用它判断的话空草稿会被一直存着
   if (!hasContent.value) {
@@ -239,6 +298,9 @@ function saveDraft() {
 
 function clearDraft() {
   clearTimeout(saveTimer);
+  if (isEdit.value) {
+    return;
+  }
   localStorage.removeItem(DRAFT_KEY);
 }
 
@@ -333,6 +395,11 @@ function submit() {
   // 否则发帖失败（网络断了、被限流、后端校验没过）时，
   // 用户写的东西和草稿会一起消失，而且不可恢复。
   emit('submit', {
+    // 发帖是 null，编辑是那条帖子的 id —— 父组件据此决定打到
+    // POST /topic 还是 POST /topic/{id}。这里不自己发请求，
+    // 因为"发完之后要刷新什么"是页面才知道的事（列表页要重拉列表、
+    // 详情页要重拉详情），抽屉不该替它们做决定
+    id: isEdit.value ? props.topic.id : null,
     topic: {
       type: topicType.value,
       title: title.value.trim(),
@@ -353,6 +420,7 @@ function resetForm() {
   // 必须走 clearEditor 而不是直接 content.value = ''：
   // 后者不会真的清空编辑器，见 clearEditor 上面的说明
   clearEditor();
+  // 编辑模式下 clearDraft 内部会自己 return（草稿不属于这次编辑）
   clearDraft();
   visible.value = false;
 }
@@ -382,8 +450,15 @@ onBeforeUnmount(() => {
                :size="650">
       <template #header>
         <div>
-          <div style="font-weight: bold;">发帖</div>
-          <div style="font-size: 14px;color: gray">草稿会自动保存，误关不会丢</div>
+          <div style="font-weight: bold;">{{ isEdit ? '编辑帖子' : '发帖' }}</div>
+          <!--
+            副标题不只是文案差别，它是在告诉用户"关掉会怎样"：
+            发帖有草稿兜底，编辑没有 —— 编辑改的是已有内容，
+            要保留就该点保存。说清楚比让用户自己试出来强
+          -->
+          <div style="font-size: 14px;color: gray">
+            {{ isEdit ? '修改后直接覆盖原内容，关掉则不保存' : '草稿会自动保存，误关不会丢' }}
+          </div>
         </div>
       </template>
 
@@ -434,7 +509,9 @@ onBeforeUnmount(() => {
       <template #footer>
         <div class="footer">
           <!-- 不置灰：缺什么由点击后 validate() 明确告知，而不是让用户对着灰按钮猜 -->
-          <el-button type="primary" :loading="sending" @click="submit">发送</el-button>
+          <el-button type="primary" :loading="sending" @click="submit">
+            {{ isEdit ? '保存' : '发送' }}
+          </el-button>
         </div>
       </template>
     </el-drawer>

@@ -17,6 +17,8 @@ public interface CommentService extends IService<Comment> {
     /** 发评论。成功返回 null */
     String createComment(int uid, CreateCommentVo vo);
 
+    String deleteComment(int uid, int id);
+
     /** 某条帖子的评论，游标分页 */
     CommentListVo fetchComments(CommentListQueryVo vo);
 }

@@ -13,11 +13,7 @@ public class FlowUtils {
     StringRedisTemplate stringRedisTemplate;
 
     public boolean limitOnceCheck(String key, int blockTime) {
-        if(stringRedisTemplate.hasKey(key)) {
-            return false;
-        } else {
-            stringRedisTemplate.opsForValue().set(key, "", blockTime, TimeUnit.SECONDS);
-        }
-        return true;
+        Boolean ok = stringRedisTemplate.opsForValue().setIfAbsent(key, "",  blockTime, TimeUnit.SECONDS);
+        return Boolean.TRUE.equals(ok);
     }
 }

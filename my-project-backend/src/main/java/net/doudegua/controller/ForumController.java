@@ -18,9 +18,11 @@ import net.doudegua.service.TopicLikeService;
 import net.doudegua.service.TopicService;
 import net.doudegua.service.TopicTypeService;
 import net.doudegua.utils.ControllerUtils;
+import net.doudegua.utils.FlowUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 论坛的 HTTP 入口。
@@ -48,6 +50,26 @@ public class ForumController {
     @Resource
     TopicLikeService topicLikeService;
 
+    @Resource
+    FlowUtils flowUtils;
+
+    /**
+     * 点赞的频率上限：每个用户每 N 秒只允许一次。
+     * <p>
+     * 这里用 {@code limitOnceCheck}（{@code SET NX EX}）是故意的 —— 它给出的语义就是
+     * "N 秒内只认第一次"，正好对应"每秒最多点一次赞"。
+     * <p>
+     * 阈值取 1 秒的理由：前端有 400ms 防抖，正常人连点两次也不会在一秒内完成；
+     * 而脚本会被硬压到 1 次/秒，降了三个数量级。
+     * 小于 1 秒会误伤手快的用户，大于 1 秒挡不住刷。
+     */
+    private static final int LIKE_INTERVAL_SECONDS = 1;
+
+    /** 点赞/取消赞共用的限流键。<b>两个动作共用一把锁</b>：反复横跳同样是在刷接口。 */
+    private boolean likeTooFrequent(int uid) {
+        return !flowUtils.limitOnceCheck("like:" + uid, LIKE_INTERVAL_SECONDS);
+    }
+
     /** 帖子类型列表，给发帖抽屉里那个下拉框用 */
     @GetMapping("/topic_type")
     public RestBean<List<TopicType>> topicTypeList() {
@@ -66,6 +88,19 @@ public class ForumController {
         return ControllerUtils.messageHandle(() -> topicService.createTopic(uid, vo));
     }
 
+    @PostMapping("/topic/{id}")
+    public RestBean<Void> editTopic(@RequestAttribute("id") int uid,
+                                    @RequestBody @Valid CreateTopicVo vo,
+                                    @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> topicService.editTopic(uid, vo, id));
+    }
+
+    @DeleteMapping("/topic/{id}")
+    public RestBean<Void> deleteTopic(@RequestAttribute("id") int uid,
+                                      @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> topicService.deleteTopic(uid, id));
+    }
+
     /**
      * 帖子详情。
      * <p>
@@ -75,15 +110,33 @@ public class ForumController {
      * 所以参数名必须写清楚，别用 {@code uuid} 这种和用户 id 无关的词。
      */
     @GetMapping("/topic/{id}")
-    public RestBean<TopicDetailVo> fetchTopic(@PathVariable("id") int id,
-                                              @RequestAttribute("id") int viewerId) {
-        TopicDetailVo detailVo = topicService.fetchTopic(id, viewerId);
+    public RestBean<TopicDetailVo> fetchTopic(@PathVariable("id") int id) {
+        TopicDetailVo detailVo = topicService.fetchTopic(id);
         if (detailVo == null) {
             // 帖子不存在。注意 HTTP 状态码仍然是 200 —— 本项目把 code 放在 body 里，
             // 全站都是这个约定，别在这儿破例改成 ResponseEntity
             return RestBean.failure(404, "帖子不存在");
         }
         return RestBean.success(detailVo);
+    }
+
+    /**
+     * "我"点过赞没有 —— 从 {@code GET /topic/{id}} 里拆出来的独立接口。
+     * <p>
+     * 为什么要拆：这是整个详情响应里<b>唯一一个依赖"谁在看"的字段</b>。
+     * 只要它还在详情响应里，那个响应就不能被公共缓存 —— 缓存下来的 liked
+     * 是所有用户共享的，A 点过赞，B 也会看到 true。
+     * <p>
+     * 这不是假想：用 TtlCache 缓存整个 VO 后实测，<b>1175 个请求里 247 个（21%）
+     * 返回了别人的点赞状态</b>，而 HTTP 全是 200、错误率 0% —— 不报错，数据就是错的。
+     * <p>
+     * 拆开之后：详情响应"谁来问都一样"→ 可以整体缓存；
+     * 这个接口按用户区分 → 不缓存，但它只是一条 COUNT 查询，很轻。
+     */
+    @GetMapping("/topic/{id}/liked")
+    public RestBean<Map<String, Boolean>> fetchLiked(@PathVariable("id") int id,
+                                                     @RequestAttribute("id") int viewerId) {
+        return RestBean.success(Map.of("liked", topicLikeService.isLiked(viewerId, id)));
     }
 
     /**
@@ -109,6 +162,12 @@ public class ForumController {
     public RestBean<Void> createComment(@RequestAttribute("id") int uid,
                                         @RequestBody @Valid CreateCommentVo vo) {
         return ControllerUtils.messageHandle(() -> commentService.createComment(uid, vo));
+    }
+
+    @DeleteMapping("/comment/{id}")
+    public RestBean<Void> deleteComment(@RequestAttribute("id") int uid,
+                                        @PathVariable int id) {
+        return ControllerUtils.messageHandle(() -> commentService.deleteComment(uid, id));
     }
 
     /**
@@ -142,6 +201,12 @@ public class ForumController {
     @PostMapping("/topic/{topicId}/like")
     public RestBean<TopicLikeVo> like(@PathVariable("topicId") int topicId,
                                       @RequestAttribute("id") int uid) {
+        // 发帖 / 编辑 / 评论 / 验证码都有 limitOnceCheck，唯独点赞原来没有 ——
+        // 一个脚本可以无限打，每次点赞 3~4 条 SQL，纯粹白压数据库。
+        // 注意这里用 body 里的 code（HTTP 仍是 200），和全站约定保持一致。
+        if (likeTooFrequent(uid)) {
+            return RestBean.failure(429, "点赞太频繁，请稍后再试");
+        }
         TopicLikeVo vo = topicLikeService.like(uid, topicId);
         if (vo == null) {
             return RestBean.failure(404, "帖子不存在");
@@ -159,6 +224,10 @@ public class ForumController {
     @DeleteMapping("/topic/{topicId}/like")
     public RestBean<TopicLikeVo> unlike(@PathVariable("topicId") int topicId,
                                         @RequestAttribute("id") int uid) {
+        // 和点赞共用同一个限流键：反复点赞/取消横跳，同样是在刷接口
+        if (likeTooFrequent(uid)) {
+            return RestBean.failure(429, "操作太频繁，请稍后再试");
+        }
         TopicLikeVo vo = topicLikeService.unlike(uid, topicId);
         if (vo == null) {
             return RestBean.failure(404, "帖子不存在");

@@ -1,10 +1,10 @@
 package net.doudegua.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import net.doudegua.buffer.LikeCountBuffer;
 import net.doudegua.entity.dto.Topic;
 import net.doudegua.entity.dto.TopicLike;
 import net.doudegua.entity.vo.response.TopicLikeVo;
@@ -24,6 +24,11 @@ import java.util.stream.Collectors;
  * 这份是**能跑的完整实现**，每个不眼熟的零件都在注释里标了它是从哪来的。
  * 别再照着它抄一遍 —— 抄完你还是不知道那些 import 是干嘛的。
  * 拿去对着看，然后自己想：如果要把"点赞"换成"收藏"，哪几行要改。
+ * <p>
+ * <b>点赞计数从这里挪走了</b>：本类只写权威关系 {@code db_topic_like}，
+ * 计数增量交给 {@link LikeCountBuffer}（Redis），再由定时任务批量落库。
+ * 这样并发点赞不再抢 {@code db_topic} 同一行的行锁；代价是详情页看到的计数
+ * 最多滞后一个落库周期。谁点过赞仍然是数据库说了算，计数只是可重算的派生值。
  */
 @Slf4j
 @Service
@@ -40,6 +45,16 @@ public class TopicLikeServiceImpl extends ServiceImpl<TopicLikeMapper, TopicLike
     @Resource
     TopicMapper topicMapper;
 
+    /**
+     * 点赞计数的 Redis 缓冲。
+     * <p>
+     * 和 {@code topicMapper} 的分工：后者写的是<b>权威关系</b>（谁点过赞），
+     * 前者只记<b>还没落库的计数增量</b>。两者不能互相替代 ——
+     * 关系丢了用户能重复点赞，计数丢了重算一条 SQL 就回来了。
+     */
+    @Resource
+    LikeCountBuffer likeCountBuffer;
+
     @Override
     @Transactional
     public TopicLikeVo like(int uid, int topicId) {
@@ -55,48 +70,45 @@ public class TopicLikeServiceImpl extends ServiceImpl<TopicLikeMapper, TopicLike
         // insertIgnore 返回影响行数：
         //   1 = 这次真插进去了（第一次点）
         //   0 = 撞了主键被跳过（早就点过了）
-        // 这一句就替代了"先 selectCount 查一遍"，而且没有并发窗口
+        // 这一句就替代了"先 selectCount 查一遍"，而且没有并发窗口。
+        // 它同时是【幂等的来源】：只有真插进去了一行，下面才记增量；
+        // 重复点赞在数据库这一层就被挡掉，Redis 一个字节都不会动。
         if (baseMapper.insertIgnore(uid, topicId) == 1) {
 
-            // ── 第 3 步：只有真插进去了才给计数加一 ──────────────────────
+            // ── 第 3 步：不写 db_topic，只把增量记进 Redis ───────────────
+            // 原来的 UPDATE ... like_count = like_count + 1 会让几百个并发点赞
+            // 全部串行在 db_topic 同一行的行锁上 —— 这是本项目第一个真实的写热点。
+            // 现在热点变成 Redis 里一个键的 INCRBY（单线程、无锁、内存操作），
+            // 真正的 UPDATE 交给 LikeCountFlusher 每 5 秒批量做一次。
             //
-            // topicMapper.update(实体, 条件) —— 第一个参数是 null，先说为什么：
-            // MyBatis-Plus 的 update 有两个参数：
-            //   第 1 个：一个实体对象，它里面**非 null 的字段**会被拼成 SET
-            //   第 2 个：条件是哪个 Wrapper
-            // 我们不用"实体塞值"那套（那要先读出对象），而是自己用 Wrapper 写 SET，
-            // 所以第 1 个参数传 null。这是 MP 最反直觉的一处，记住形状就行。
-            //
-            // setSql 是往 SET 子句里塞一段**原始 SQL**。
-            // 换成 .set(Topic::getLikeCount, 5) 就是把计数**设为 5**（绝对值），
-            // 而我们要的是在数据库里做加法，所以必须用 setSql。
-            // "在数据库里做加法"就是原子的来源 —— 加法不是在我们 Java 里算的。
-            topicMapper.update(null, new LambdaUpdateWrapper<Topic>()
-                    .setSql("like_count = like_count + 1")
-                    .eq(Topic::getId, topicId));   // WHERE id = ?
+            // ⚠️ 这一步在事务里，顺序是「先写关系、再记增量」。
+            //    Redis 写成功、但事务最终提交失败（连接断、进程被杀）会多算一笔；
+            //    计数是派生值，能用 005-repair-like-count.sql 从 db_topic_like 重算。
+            //    改成 afterCommit 能把这个窗口关小，但那样"自己刚点的这一下"
+            //    在响应里就不可见（要靠额外补偿），这一轮明确保持现有顺序。
+            likeCountBuffer.addDelta(topicId, 1);
         }
 
-        // ── 第 4 步：把权威的新状态报回去 ────────────────────────────────
-        // 为什么重新查一次：第 1 步拿到的那个 topic 对象是"改之前"的快照，
-        // 它的 likeCount 是旧的。而且并发时别人可能也加过，本地算 old+1 会少报。
-        // 多这一次查询换来"前端看到的数字永远和服务端一致"，值。
-        return new TopicLikeVo(true, topicMapper.selectById(topicId).getLikeCount());
+        // ── 第 4 步：DB 快照 + 还没落库的增量 ────────────────────────────
+        // 不再重查 db_topic：刚加的 1 还在 Redis 里，重查也看不到它。
+        // 重复点赞同样适用 —— 快照可能是几秒前的，但加上 delta 已经是
+        // 当前能给出的最准的值。详情页不走这里，它读 DB 快照，最多滞后一个落库周期。
+        int likeCount = (int) (topic.getLikeCount() + likeCountBuffer.getDelta(topicId));
+        return new TopicLikeVo(true, likeCount);
     }
 
     @Override
     @Transactional
     public TopicLikeVo unlike(int uid, int topicId) {
-        if (topicMapper.selectById(topicId) == null) {
+        // 和第 1 步一样，先把快照留下来 —— 后面"重复取消"那条路径要用它的 likeCount
+        Topic topic = topicMapper.selectById(topicId);
+        if (topic == null) {
             return null;
         }
 
         // delete(条件) 的返回值同样是影响行数：
         //   1 = 真删掉了一行（这次取消有效）
         //   0 = 本来就没点过（重复取消）
-        // LambdaQueryWrapper 和 LambdaUpdateWrapper 是两套类：
-        //   查/删 用 LambdaQueryWrapper（在 core.conditions.query 包里）
-        //   改    用 LambdaUpdateWrapper（在 core.conditions.update 包里）
-        // 写错了编译不过，但记住这个对应关系能省你翻包的时间
         //
         // 注意 <TopicLike> 是显式写出来的，不是 <>：
         // new 后面直接接 .eq(...) 时，菱形推断会失败（编译器推不出类型参数），
@@ -105,16 +117,17 @@ public class TopicLikeServiceImpl extends ServiceImpl<TopicLikeMapper, TopicLike
                 .eq(TopicLike::getUid, uid)          // WHERE uid = ?
                 .eq(TopicLike::getTopicId, topicId)); // AND topic_id = ?
 
-        // 这一句是 unlike 唯一需要小心的地方：
-        // 必须先确认"这次真的删掉了一行"，否则连点两次取消，
-        // 第二次会拿着 removed=0 也去减一，把别人的赞减掉
+        // 和 like 对称：只有真的删掉了一行才记 -1。
+        // 否则连点两次取消，第二次会拿着 removed=0 也去减一，把别人的赞减掉。
         if (removed == 1) {
-            topicMapper.update(null, new LambdaUpdateWrapper<Topic>()
-                    .setSql("like_count = like_count - 1")
-                    .eq(Topic::getId, topicId));
+            likeCountBuffer.addDelta(topicId, -1);
         }
 
-        return new TopicLikeVo(false, topicMapper.selectById(topicId).getLikeCount());
+        // DB 快照 + 未落库增量（这里可能是负数）。
+        // 一行都没删也不提前返回：多读一次 Redis，换来的是一致的计数口径 ——
+        // 否则"重复取消"会返回一个没算上别人未落库增量的旧快照。
+        int likeCount = (int) (topic.getLikeCount() + likeCountBuffer.getDelta(topicId));
+        return new TopicLikeVo(false, likeCount);
     }
 
     @Override

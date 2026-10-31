@@ -80,17 +80,17 @@ async function save() {
         <span class="head-title">隐私设置</span>
       </div>
 
-      <div class="hint">
-        关掉的项，别人看你主页时就是空的。他们看不出这是"没填"还是"不想给看" ——
-        这是故意的，null 只说"没有内容可显示"，不透露你设置成了什么。
-      </div>
+<!--      <div class="hint">-->
+<!--        关掉的项，别人看你主页时就是空的。他们看不出这是"没填"还是"不想给看" ——-->
+<!--        这是故意的，null 只说"没有内容可显示"，不透露你设置成了什么。-->
+<!--      </div>-->
 
       <el-divider style="margin: 12px 0"/>
 
       <div class="row" v-for="item in items" :key="item.key">
         <div class="row-text">
           <div class="row-label">{{ item.label }}</div>
-          <div class="row-desc">{{ item.desc }}</div>
+<!--          <div class="row-desc">{{ item.desc }}</div>-->
         </div>
         <el-switch v-model="form[item.key]"/>
       </div>

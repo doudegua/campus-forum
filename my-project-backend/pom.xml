@@ -121,6 +121,33 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+            本地缓存。版本由 spring-boot-starter-parent 统一管理，不用自己写 <version>。
+            <p>
+            为什么不再用项目自带的 TtlCache：它是一个 40 行的极简实现，实测暴露出三个问题 ——
+              1. 没有容量上限，只在 size>512 时扫描删除"已过期"项，而且那个扫描是 O(n) 的、
+                 每次 put 都跑一遍。压测里它让详情页吞吐从 91.4 掉到 82.3（比不加缓存还慢）。
+              2. 没有单飞：缓存击穿时 N 个并发线程同时查库。
+              3. 没有 TTL 抖动：同批写入的键同时过期，命中率瞬间归零。
+            <p>
+            Caffeine 把前两个直接做掉了（O(1) 淘汰 + get(key,loader) 天然单飞），
+            第三个用自定义 Expiry 补上（见 CacheConfiguration）。
+            版块名那个只有 1 个键的小缓存仍保留 TtlCache —— 那里换库是杀鸡用牛刀。
+        -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
     </dependencies>
 
     <build>

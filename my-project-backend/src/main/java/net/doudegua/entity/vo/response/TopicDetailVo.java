@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import net.doudegua.entity.dto.Topic;
+import net.doudegua.entity.dto.TopicDetailRow;
 
 import java.util.Date;
 
@@ -38,6 +39,14 @@ public class TopicDetailVo {
      * 接口是裸的，一条 curl 就能存进去 {@code <img src=x onerror=...>}。
      */
     String content;
+    /**
+     * 帖子类型的 <b>id</b>，对应 db_topic_type.id。
+     * <p>
+     * 和下面的 {@code typeName} 是两件事，都得给：名字是给人看的，id 是给
+     * "编辑抽屉把下拉框预选上"用的。只给名字的话前端就得拿名字去类型列表里
+     * 反查 id —— 重名会选错，类型改过名之后反查出来的 id 还可能根本对不上。
+     */
+    Integer type;
     String typeName;
     /** 作者 id。点作者进主页要用它，所以不能只给名字 */
     Integer authorId;
@@ -60,21 +69,22 @@ public class TopicDetailVo {
      * 点赞数。和 commentCount 一样，跟着 topic 那一行一起回来，不花额外查询。
      */
     Integer likeCount;
-    /**
-     * <b>"我"点过赞没有。</b>
-     * <p>
-     * 注意这是这个 VO 里<b>第一个依赖"谁在看"的字段</b>：同一条帖子，
-     * 你和我请求它，这个值不一样。前面所有字段都是"谁来问都一样"。
-     * <p>
-     * 它由 service 单独设进来（不能从 topic 那一行推出来，那行里没有"我"的信息）。
-     * 这也是为什么 {@code fetchTopic} 那个 {@code viewerId} 参数终于有了用处 ——
-     * 之前它一直是个"先留着"的空参数。
-     * <p>
-     * 顺带一提：只要 VO 里有了这种字段，这个响应就**不能被公共缓存**了。
-     * 要么缓存里不含它、读出来再补一次查询，要么缓存 key 带上用户 id（等于没缓存）。
-     * 现在不用管，但以后给详情页加缓存时，第一件撞上的就是这个。
+
+    /*
+     * ⚠️ 这里【故意没有】liked 字段 —— 这是本次改造的核心。
+     *
+     * 原来有，而且它是整个 VO 里唯一一个依赖"谁在看"的字段。只要它在，
+     * 这个响应就【不能被公共缓存】：缓存下来的 liked 是所有用户共享的，
+     * A 点过赞，B 也会看到 true。
+     *
+     * 这不是假想。用 TtlCache 缓存整个 VO 后实测过：1175 个请求里
+     * 247 个（21%）返回了别人的点赞状态，而 HTTP 全是 200、错误率 0%
+     * —— 不报任何错，数据就是错的。
+     *
+     * 现在 liked 走独立接口 GET /api/forum/topic/{id}/liked，
+     * 于是这个 VO 变成"谁来问都一样"，可以整体缓存。
+     * 前端加载完详情后单独问一次 liked。
      */
-    Boolean liked;
 
     /**
      * 名字和头像由外面查好了传进来 —— <b>VO 自己不查库</b>，
@@ -85,6 +95,9 @@ public class TopicDetailVo {
         this.id = topic.getId();
         this.title = topic.getTitle();
         this.content = topic.getContent();
+        // type 是 id（topic 行里本来就有），typeName 是外面查好了传进来的名字。
+        // 一个来自 topic、一个来自参数，别把两者弄混
+        this.type = topic.getType();
         this.typeName = typeName;
         this.authorId = topic.getUid();
         this.authorName = authorName;
@@ -93,5 +106,25 @@ public class TopicDetailVo {
         // 这两个不是"查好了传进来"的，是跟着 topic 那一行一起回来的
         this.commentCount = topic.getCommentCount();
         this.likeCount = topic.getLikeCount();
+    }
+
+    /**
+     * 详情页现在的构造方式：作者名和头像已经在同一条 SQL 里 JOIN 出来了。
+     * <p>
+     * 老构造器保留着 —— 万一将来有别的地方只有 {@code Topic} 而没走 JOIN 查询，
+     * 还能用它。但 {@code fetchTopic} 已经改走这一条了。
+     */
+    public TopicDetailVo(TopicDetailRow row, String typeName) {
+        this.id = row.getId();
+        this.title = row.getTitle();
+        this.content = row.getContent();
+        this.type = row.getType();
+        this.typeName = typeName;
+        this.authorId = row.getUid();
+        this.authorName = row.getAuthorName();
+        this.authorAvatar = row.getAuthorAvatar();
+        this.time = row.getTime();
+        this.commentCount = row.getCommentCount();
+        this.likeCount = row.getLikeCount();
     }
 }

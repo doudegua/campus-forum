@@ -46,15 +46,8 @@ public class SecurityConfiguration {
         return http
                 .authorizeHttpRequests(conf -> conf
                         .requestMatchers("/api/auth/**", "/error").permitAll()
-                        // 取图必须放行。帖子内容里的图片是 <img src="/api/image/xxx">，
-                        // 浏览器发这种请求时不会带 Authorization 头（前端把 token 存在
-                        // localStorage 里、靠请求头传），所以只要还要求登录，
-                        // 每张图都只会拿到 401 的 JSON，渲染成破图。
-                        // 只放行 GET，上传（POST /api/image/upload）仍然需要登录。
-                        // 代价：知道 URL 的人就能看图。key 是 128 位随机 UUID，猜不出来，
-                        // 效果等同"拿到链接就能看"，这也是论坛图片的常规模型。
                         .requestMatchers(HttpMethod.GET, "/api/image/*").permitAll()
-//                        .requestMatchers("/api/test/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
                         .anyRequest().authenticated()
                 )
                 .formLogin(conf -> conf

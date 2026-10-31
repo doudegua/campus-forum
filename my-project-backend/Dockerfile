@@ -27,14 +27,30 @@ WORKDIR /build
 #      Goal requires a project to execute but there is no POM in this directory
 #    而且这个错误看起来像"Maven 配置有问题"，其实只是文件没拷进来。
 #    （这个坑真踩过：注释里写满了"要先单独 COPY pom.xml"的理由，代码却没写。）
+#
+# ⚠️ 但"先 COPY pom.xml"只解决了一半问题：pom 一改，这层还是整体作废，
+#    上一轮已经下好的依赖跟着一起消失（RUN 层只有成功执行完才会被缓存）。
+#    真踩过：为了加监控往 pom 里塞了两个依赖，服务器上重建时全量重下，
+#    18 分钟还在 Downloading from central。
+#
+# --mount=type=cache 把 ~/.m2 从"镜像层"搬到"构建缓存"里：
+#   它是挂载进来的目录，不参与层哈希计算，pom 怎么改都不会被丢掉。
+#   于是改 pom 只补下**新增**的那几个包，其余直接命中本地缓存。
+#
+# sharing=locked：多个构建并发时排队访问，避免同时写坏同一个 .m2。
+# 注意：缓存默认上限 10G，`docker builder prune` 会清掉它（清了就得重下一次）。
 COPY pom.xml .
-RUN mvn -B dependency:go-offline
+RUN --mount=type=cache,target=/root/.m2,sharing=locked \
+    mvn -B dependency:go-offline
 
 # 再拷源码。这一层会随源码变化而重建，但上面的依赖还在缓存里
 COPY . .
 # -DskipTests：构建镜像时只要 jar，测试在开发机上跑更合适。
 # （注意它属于这一句，不属于上面那条 go-offline —— 之前那行注释放错了位置。）
-RUN mvn -B package -DskipTests
+# 这里必须再挂一次同一个缓存：缓存只对"挂了它的那条命令"可见，
+# 漏掉这句的话，package 阶段会重新下一遍依赖，前面就白缓存了。
+RUN --mount=type=cache,target=/root/.m2,sharing=locked \
+    mvn -B package -DskipTests
 
 # ---------------------------------------------------------------------------
 # 阶段 2：运行
