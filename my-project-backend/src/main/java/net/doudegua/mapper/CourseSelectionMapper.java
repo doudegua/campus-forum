@@ -2,18 +2,13 @@ package net.doudegua.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import net.doudegua.entity.dto.CourseSelection;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 选课记录 Mapper。
- * <p>
- * ⚠️ <b>核心 TODO（三段里的第 3 段）：幂等插入。</b>同样先留空。
- * 写法照抄 {@code TopicLikeMapper.insertIgnore}：
- * <pre>
- * &#64;Insert("INSERT IGNORE INTO db_course_selection (uid, course_id, status, created_at) " +
- *         "VALUES (#{uid}, #{courseId}, 1, NOW())")
- * int insertIgnore(@Param("uid") int uid, @Param("courseId") int courseId);
- * </pre>
  * <b>返回值 1 / 0 是整个消费端的分岔点</b>：
  * <ul>
  *   <li>{@code 1} —— 这条消息第一次处理，接下来才允许给 {@code db_course.selected_count} +1</li>
@@ -29,5 +24,6 @@ import org.apache.ibatis.annotations.Mapper;
 @Mapper
 public interface CourseSelectionMapper extends BaseMapper<CourseSelection> {
 
-    // TODO(核心 3/3)：在这里补上 insertIgnore，SQL 见类注释。
+    @Insert("INSERT IGNORE INTO db_course_selection (uid, course_id, status) VALUES (#{uid}, #{courseId}, 1)")
+    public int insertIgnore(@Param("uid") int uid, @Param("courseId") int courseId);
 }

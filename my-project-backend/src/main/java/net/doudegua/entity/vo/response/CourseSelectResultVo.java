@@ -1,5 +1,9 @@
 package net.doudegua.entity.vo.response;
 
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
 /**
  * 一次抢课请求的结果。
  * <p>
@@ -19,9 +23,14 @@ package net.doudegua.entity.vo.response;
  * 把"排队中"当失败返回，前端就会提示"抢课失败"然后让用户重试，
  * 而重试会被幂等挡住 —— 用户永远不知道到底成了没有。
  */
-public record CourseSelectResultVo(String status, Integer remaining) {
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class CourseSelectResultVo {
 
     /** 骨架阶段占位：这三段核心还没写 */
+    private String status = NOT_STARTED;
+    private Long remaining = -2L;
     public static final String NOT_IMPLEMENTED = "NOT_IMPLEMENTED";
 
     public static final String QUEUED = "QUEUED";
@@ -29,4 +38,6 @@ public record CourseSelectResultVo(String status, Integer remaining) {
     public static final String SOLD_OUT = "SOLD_OUT";
     public static final String DUPLICATE = "DUPLICATE";
     public static final String NOT_STARTED = "NOT_STARTED";
+    public static final String CLOSED = "CLOSED";
+    public static final String FAILURE = "FAILURE";
 }

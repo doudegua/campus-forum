@@ -4,17 +4,20 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.dto.Course;
+import net.doudegua.entity.dto.CourseSelection;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
 import net.doudegua.mapper.CourseMapper;
 import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.service.CourseService;
+import net.doudegua.utils.Const;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 抢课实现 —— <b>骨架，三段核心留空</b>。
@@ -41,22 +44,6 @@ import java.util.List;
 public class CourseServiceImpl implements CourseService {
 
     /**
-     * TODO(核心 1/3)：库存预扣脚本。
-     * <p>
-     * 骨架阶段是 {@code null}，别在 {@link #select} 里直接 execute 它 ——
-     * 会 NPE。写的时候换成：
-     * <pre>
-     * RedisScript.of("""
-     *     -- KEYS[1]=stock  KEYS[2]=chosen  ARGV[1]=uid
-     *     local stock = redis.call('GET', KEYS[1])
-     *     if not stock then return -2 end
-     *     if redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 then return -1 end
-     *     if tonumber(stock) &lt;= 0 then return 0 end
-     *     redis.call('DECR', KEYS[1])
-     *     redis.call('SADD', KEYS[2], ARGV[1])
-     *     return tonumber(stock) - 1
-     * """, Long.class)
-     * </pre>
      * 返回码约定：{@code -2} 未预热 / {@code -1} 重复 / {@code 0} 售罄 / {@code >=0} 扣完后的余量。
      * <b>为什么不直接用 {@code DECR} 再判断返回值</b>：DECR 会先扣到负数，
      * 你还得再 INCR 还回去 —— 中间那次负数在并发下会被别的请求读到。
@@ -64,7 +51,17 @@ public class CourseServiceImpl implements CourseService {
      * <p>
      * 项目里的先例写法：{@code FlowLimitFilter.COUNT_SCRIPT}、{@code LikeCountBuffer.ADD_DELTA_SCRIPT}。
      */
-    private static final RedisScript<Long> SELECT_SCRIPT = null;
+    private static final RedisScript<Long> SELECT_SCRIPT =
+            RedisScript.of("""
+            -- KEYS[1]=chosen  KEYS[2]=ready  ARGV[1]=uid
+            local cap = redis.call('GET', KEYS[2])
+            if not cap then return -2 end
+            if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return -1 end
+            local used = redis.call('SCARD', KEYS[1])
+            if used >= tonumber(cap) then return 0 end
+            redis.call('SADD', KEYS[1], ARGV[1])
+            return tonumber(cap) - used          -- >=1，扣完后的剩余 = 返回值 - 1
+            """, Long.class);
 
     @Resource
     StringRedisTemplate stringRedisTemplate;
@@ -102,44 +99,36 @@ public class CourseServiceImpl implements CourseService {
                 .toList();
     }
 
-    /**
-     * TODO(核心)：抢课入口。按下面的顺序填空，每一步都别省。
-     * <pre>
-     * 1. 课程存在性（和这一轮的 NOT_STARTED 语义绑定）：
-     *      courseMapper.selectById(courseId) == null → NOT_STARTED
-     *
-     * 2. Lua 预扣（必须一次 execute 完成判断+扣减+去重）：
-     *      Long r = stringRedisTemplate.execute(SELECT_SCRIPT,
-     *              List.of(Const.COURSE_STOCK + courseId, Const.COURSE_CHOSEN + courseId),
-     *              String.valueOf(uid));
-     *      r == -2 → NOT_STARTED（没预热）
-     *      r == -1 → DUPLICATE
-     *      r ==  0 → SOLD_OUT
-     *      r &gt;= 0 → 继续
-     *
-     * 3. 发 MQ：rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE,
-     *              Map.of("uid", uid, "courseId", courseId));
-     *      ⚠️ 发送抛异常时，库存已经在第 2 步扣掉了 —— 必须补偿：
-     *          INCR stock + SREM chosen，然后返回失败。
-     *          不补偿 = 这个名额永远少一个（少卖），而且用户不知道。
-     *
-     * 4. 返回 QUEUED（不是 SUCCESS）。此时 DB 里还没有任何记录，
-     *    真正成败由消费者写进 course:result:{courseId}:{uid}，前端轮询 result 接口。
-     * </pre>
-     * 注意：整个方法<b>不要</b>加 {@code @Transactional}。它只碰 Redis 和 MQ，
-     * 没有 DB 写；加了反而会让人误以为"扣库存能跟事务一起回滚"—— 不能。
-     */
     @Override
     public CourseSelectResultVo select(int uid, int courseId) {
-        // 骨架：暂时原样返回 NOT_IMPLEMENTED，controller 会翻译成 501。
-        // 你写的时候把下面这行删掉。
-        return new CourseSelectResultVo(CourseSelectResultVo.NOT_IMPLEMENTED, null);
+
+        Course course = courseMapper.selectById(courseId);
+        if (course == null) {
+            return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, -2L);
+        }
+        long now   = System.currentTimeMillis();
+        long start = course.getSelectStart().getTime();
+        long end   = course.getSelectEnd().getTime();
+        if (now < start) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, -2L);
+        if (now > end)   return new CourseSelectResultVo(CourseSelectResultVo.CLOSED, -2L);
+
+        Long r = stringRedisTemplate.execute(SELECT_SCRIPT,
+                                            List.of(Const.COURSE_STOCK + courseId, Const.COURSE_CHOSEN + courseId),
+                                            String.valueOf(uid));
+
+        if(r == 0) return new CourseSelectResultVo(CourseSelectResultVo.SOLD_OUT, r);
+        if(r == -1) return new CourseSelectResultVo(CourseSelectResultVo.DUPLICATE, r);
+        if(r == -2) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, r);
+
+        if(r >= 1) {
+            rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE, Map.of("uid", uid, "courseId", courseId));
+            return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, r);
+        }
+
+        return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, null);
     }
 
     /**
-     * TODO(核心)：查最终结果。前端轮询用，<b>这个方法会被高频调用</b>，
-     * 所以它应该是一次 Redis GET，不能每次都查库。
-     * <pre>
      * 1. 先读 course:result:{courseId}:{uid}：
      *      "1" → SUCCESS
      *      "0" → 失败（具体原因可以在 value 里带，或者查 DB 区分）
@@ -150,11 +139,26 @@ public class CourseServiceImpl implements CourseService {
      *          有 → QUEUED（扣了库存、还没落库）
      *          没有 → NOT_STARTED / 未参与（HTTP 仍 200）
      * 3. 回填结果键要带 TTL：这是缓存不是账本，活动结束后自然过期。
-     * </pre>
-     * ⚠️ 别在这里返回 404 表示"还没结果" —— 前端无法区分"没抢到"和"还在排队"。
+     * 别在这里返回 404 表示"还没结果" —— 前端无法区分"没抢到"和"还在排队"。
      */
     @Override
     public CourseSelectResultVo result(int uid, int courseId) {
-        return new CourseSelectResultVo(CourseSelectResultVo.NOT_IMPLEMENTED, null);
+        String key = Const.COURSE_RESULT + courseId + ":" + uid;
+        String value = stringRedisTemplate.opsForValue().get(key);
+
+        if("0".equals(value)) {return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, null);}
+        if("1".equals(value)) {return new CourseSelectResultVo(CourseSelectResultVo.SUCCESS, null);}
+
+        if(Boolean.TRUE.equals(stringRedisTemplate.opsForSet()
+                .isMember(Const.COURSE_STOCK + courseId, String.valueOf(uid)))) {
+            return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, null);
+        }
+
+        if(courseSelectionMapper.selectCount(new LambdaQueryWrapper<CourseSelection>()
+                .eq(CourseSelection::getUid, uid)
+                .eq(CourseSelection::getCourseId, courseId)) > 0) {
+            return new CourseSelectResultVo(CourseSelectResultVo.SUCCESS, null);
+        }
+        return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, null);
     }
 }

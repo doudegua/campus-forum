@@ -1,11 +1,22 @@
 package net.doudegua.listener;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import net.doudegua.entity.dto.CourseSelection;
+import net.doudegua.mapper.CourseMapper;
+import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.utils.Const;
 import org.springframework.amqp.rabbit.annotation.RabbitHandler;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -49,13 +60,46 @@ import java.util.Map;
 @RabbitListener(queues = Const.COURSE_SELECT_QUEUE)
 public class CourseSelectListener {
 
-    /**
-     * ⚠️ 骨架版：只记录，不处理。这个方法目前会<b>确认并丢弃</b>消息。
-     * 在实现真正的消费逻辑之前，不要接生产端。
-     */
+    @Resource
+    CourseSelectionMapper courseSelectionMapper;
+
+    @Resource
+    CourseMapper courseMapper;
+
+    @Resource
+    StringRedisTemplate stringRedisTemplate;
+
+    private static final RedisScript<Long> INCREMENT_SELECTED_FAILURE_SCRIPT = RedisScript.of("""
+                                                if redis.call('SREM', KEYS[2], ARGV[1]) then
+                                                redis.call('INCR', KEYS[1]) end
+                                                return 1
+                                                """, Long.class);
+
     @RabbitHandler
     public void onCourseSelect(Map<String, Object> message) {
-        log.warn("收到选课消息，但消费端尚未实现，消息已被确认丢弃：{}", message);
+
+//        log.warn("收到选课消息：{}", message);
         // TODO(核心)：insertIgnore → 条件 UPDATE → 写结果键；失败补偿见类注释。
+        int uid = ((Number) message.get("uid")).intValue();
+        int courseId = ((Number) message.get("courseId")).intValue();
+        enrollment(uid, courseId);
+    }
+
+    @Transactional
+    protected void enrollment(int uid, int courseId) {
+        int inserted = courseSelectionMapper.insertIgnore(uid, courseId);
+        if(inserted == 0) return;
+
+        int updated = courseMapper.incrementSelectedIfAvailable(courseId);
+        // 1 为成功，0 为失败，此处表意当同于 redis
+        if(updated == 1) stringRedisTemplate.opsForValue().set(Const.COURSE_RESULT + courseId + ":" + uid, "1", Duration.ofHours(24));
+        if(updated == 0) {
+            courseSelectionMapper.delete(new LambdaQueryWrapper<CourseSelection>()
+                    .eq(CourseSelection::getUid, uid)
+                    .eq(CourseSelection::getCourseId, courseId)
+            );
+            stringRedisTemplate.execute(INCREMENT_SELECTED_FAILURE_SCRIPT, List.of(Const.COURSE_STOCK + courseId, Const.COURSE_CHOSEN + courseId));
+            stringRedisTemplate.opsForValue().set(Const.COURSE_RESULT + courseId + ":" + uid, "0", Duration.ofHours(24));
+        }
     }
 }

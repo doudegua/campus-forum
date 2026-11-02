@@ -45,7 +45,7 @@ public class CourseController {
     public RestBean<CourseSelectResultVo> select(@RequestAttribute("id") int uid,
                                                  @RequestBody @Valid CourseSelectVo vo) {
         CourseSelectResultVo result = courseService.select(uid, vo.getCourseId());
-        if (CourseSelectResultVo.NOT_IMPLEMENTED.equals(result.status())) {
+        if (CourseSelectResultVo.NOT_IMPLEMENTED.equals(result.getStatus())) {
             return RestBean.failure(501,
                     "抢课功能尚未实现：骨架已就位，核心见 docs/course-selection.md");
         }
@@ -62,7 +62,7 @@ public class CourseController {
     public RestBean<CourseSelectResultVo> result(@RequestAttribute("id") int uid,
                                                  @RequestParam("courseId") int courseId) {
         CourseSelectResultVo result = courseService.result(uid, courseId);
-        if (CourseSelectResultVo.NOT_IMPLEMENTED.equals(result.status())) {
+        if (CourseSelectResultVo.NOT_IMPLEMENTED.equals(result.getStatus())) {
             return RestBean.failure(501,
                     "抢课结果查询尚未实现：骨架已就位，核心见 docs/course-selection.md");
         }

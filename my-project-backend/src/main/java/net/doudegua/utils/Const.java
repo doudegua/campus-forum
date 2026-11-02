@@ -40,6 +40,7 @@ public class Const {
 
     /* ==================== 抢课 ==================== */
 
+    public static final String COURSE_READY = "course:ready:";
     /**
      * 预扣库存，键形如 {@code course:stock:123}，值是"还能抢几个"。
      * <p>
