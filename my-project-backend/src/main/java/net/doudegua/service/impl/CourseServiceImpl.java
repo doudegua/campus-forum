@@ -53,14 +53,14 @@ public class CourseServiceImpl implements CourseService {
      */
     private static final RedisScript<Long> SELECT_SCRIPT =
             RedisScript.of("""
-            -- KEYS[1]=chosen  KEYS[2]=ready  ARGV[1]=uid
-            local cap = redis.call('GET', KEYS[2])
-            if not cap then return -2 end
+            -- KEYS[1]=chosen  KEYS[2]=ready  ARGV[1]=uid  ARGV[2]=cap
+            -- local cap = redis.call('GET', KEYS[2]) 这个加了redis预热之后再用
+            -- if not cap then return -2 end
             if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return -1 end
             local used = redis.call('SCARD', KEYS[1])
-            if used >= tonumber(cap) then return 0 end
+            if used >= tonumber(ARGV[2]) then return 0 end
             redis.call('SADD', KEYS[1], ARGV[1])
-            return tonumber(cap) - used          -- >=1，扣完后的剩余 = 返回值 - 1
+            return tonumber(ARGV[2]) - used          -- >=1，扣完后的剩余 = 返回值 - 1
             """, Long.class);
 
     @Resource
@@ -112,17 +112,38 @@ public class CourseServiceImpl implements CourseService {
         if (now < start) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, -2L);
         if (now > end)   return new CourseSelectResultVo(CourseSelectResultVo.CLOSED, -2L);
 
+        // 目前redis在开放中崩溃会导致比较剩余容量所用键消失，导致超卖，下次一定
         Long r = stringRedisTemplate.execute(SELECT_SCRIPT,
-                                            List.of(Const.COURSE_STOCK + courseId, Const.COURSE_CHOSEN + courseId),
-                                            String.valueOf(uid));
+                                            List.of(Const.COURSE_CHOSEN + courseId
+                                            ),
+                                            String.valueOf(uid), String.valueOf(course.getCapacity()));
+
+        if (r == null) {
+            log.error("选课脚本返回 null：uid={}, courseId={}", uid, courseId);
+            return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, null);
+        }
 
         if(r == 0) return new CourseSelectResultVo(CourseSelectResultVo.SOLD_OUT, r);
         if(r == -1) return new CourseSelectResultVo(CourseSelectResultVo.DUPLICATE, r);
         if(r == -2) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, r);
 
         if(r >= 1) {
-            rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE, Map.of("uid", uid, "courseId", courseId));
-            return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, r);
+            try {
+                rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE,
+                        Map.of("uid", uid, "courseId", courseId));
+            } catch (Exception e) {
+                // 扣减已经发生，发送失败必须把 chosen 还回去，否则名额永远卡住
+                log.error("选课消息发送失败，回补 chosen：uid={}, courseId={}", uid, courseId, e);
+                try {
+                    stringRedisTemplate.opsForSet()
+                            .remove(Const.COURSE_CHOSEN + courseId, String.valueOf(uid));
+                } catch (Exception releaseError) {
+                    log.error("回补 chosen 失败，名额可能泄漏：uid={}, courseId={}",
+                            uid, courseId, releaseError);
+                }
+                return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, r);
+            }
+            return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, r - 1);
         }
 
         return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, null);
@@ -150,7 +171,7 @@ public class CourseServiceImpl implements CourseService {
         if("1".equals(value)) {return new CourseSelectResultVo(CourseSelectResultVo.SUCCESS, null);}
 
         if(Boolean.TRUE.equals(stringRedisTemplate.opsForSet()
-                .isMember(Const.COURSE_STOCK + courseId, String.valueOf(uid)))) {
+                .isMember(Const.COURSE_CHOSEN + courseId, String.valueOf(uid)))) {
             return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, null);
         }
 
