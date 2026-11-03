@@ -15,9 +15,8 @@ import java.util.List;
 /**
  * 抢课预热 / 关停入口。
  * <p>
- * 路径放在 {@code /api/admin/**} 下，是为下一轮权限留的边界：
- * 现在 {@code anyRequest().authenticated()}，任何登录用户都能调；
- * 加权限时只需在 SecurityConfiguration 里补一条 {@code hasRole("ADMIN")}。
+ * 路径在 {@code /api/admin/**} 下，SecurityConfiguration 已要求 {@code ROLE_ADMIN}：
+ * 未登录 401、普通用户 403、管理员放行。
  * <p>
  * 控制器不写业务：逐门课的结果由 service 返回，允许部分成功。
  */
