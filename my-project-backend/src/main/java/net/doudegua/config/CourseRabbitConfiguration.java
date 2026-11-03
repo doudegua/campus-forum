@@ -1,8 +1,14 @@
 package net.doudegua.config;
 
+import net.doudegua.listener.CourseFailureRecoverer;
 import net.doudegua.utils.Const;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -48,5 +54,36 @@ public class CourseRabbitConfiguration {
     @Bean
     public Queue courseSelectDeadLetterQueue() {
         return QueueBuilder.durable(Const.COURSE_SELECT_DLQ).build();
+    }
+
+    /**
+     * 抢课专用容器工厂：不碰 mail 的全局 listener 配置。
+     * <p>
+     * retry 3 次 + 退避，重试耗尽交给 recoverer；A 方案下 recoverer 正常返回，
+     * 消息被 ack 丢弃，不进 DLQ。{@code default-requeue-rejected=false} 是保险：
+     * 万一 recoverer 自己抛异常，也不会无限重投。
+     */
+    @Bean("courseListenerContainerFactory")
+    public SimpleRabbitListenerContainerFactory courseListenerContainerFactory(
+            SimpleRabbitListenerContainerFactoryConfigurer configurer,
+            ConnectionFactory connectionFactory,
+            MessageConverter messageConverter,
+            CourseFailureRecoverer recoverer) {
+
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        configurer.configure(factory, connectionFactory);
+        factory.setMessageConverter(messageConverter);
+        factory.setPrefetchCount(1);
+        factory.setConcurrentConsumers(1);
+        factory.setMaxConcurrentConsumers(1);
+        factory.setDefaultRequeueRejected(false);
+
+        factory.setAdviceChain(RetryInterceptorBuilder.stateless()
+                .maxAttempts(3)
+                .backOffOptions(500, 2.0, 5000)
+                .recoverer(recoverer)
+                .build());
+
+        return factory;
     }
 }

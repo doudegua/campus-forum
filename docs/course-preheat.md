@@ -1,7 +1,8 @@
-# 抢课预热：设计、TODO 与验收
+# 抢课预热：设计、实现与验收
 
-> 本轮只做预热/关停，**不做** retry/DLQ、publisher confirm、权限、对账、监控。
-> 核心两个方法在 `CoursePreheatServiceImpl` 里留空，外围（VO/Controller/结果/常量）已就位。
+> **状态：预热/关停已实现并实测。** retry 已做 A 方案（写失败结果 + ack 丢弃，不进 DLQ）；
+> publisher confirm、权限、对账、监控仍未做。
+> 核心实现见 `CoursePreheatServiceImpl`；本文保留设计推导和验收步骤。
 
 ---
 
@@ -118,8 +119,8 @@ curl -s -X POST ... -d '[{"courseId":1}]' .../preheat
 # 4) 到点后 select → QUEUED；重复 → DUPLICATE
 ```
 
-> ⚠️ 预热的 staging/ready 与 `select` 的切换要一起上线。`select` 现在还是“查 DB + chosen”，
-> 在切到 meta 之前，预热只能在没有流量的情况下测；否则用户会写进旧 chosen，被 RENAME 覆盖。
+> ⚠️ 历史注意：预热和 `select` 切换必须一起上线。切换之前 `select` 还是“查 DB + chosen”，
+> 预热期间的用户会被 RENAME 覆盖；本实现已经切到 meta，保留这条是为了以后重写时别踩。
 
 ## 7. 这一轮的学习检查点
 

@@ -21,7 +21,9 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-@RabbitListener(queues = Const.COURSE_SELECT_QUEUE)
+@RabbitListener(
+        queues = Const.COURSE_SELECT_QUEUE,
+        containerFactory = "courseListenerContainerFactory")
 public class CourseSelectListener {
 
     @Resource
