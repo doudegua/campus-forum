@@ -62,6 +62,24 @@ public class Const {
     public static final String COURSE_CHOSEN = "course:chosen:";
 
     /**
+     * 课程元数据（Hash），键形如 {@code course:meta:123}。
+     * 字段：capacity / start / end / ready，时间存 epoch 毫秒。
+     * ready 必须最后写，写之前 select 一律返回"未就绪"。
+     */
+    public static final String COURSE_META = "course:meta:";
+
+    /** 预热用的临时集合，键形如 {@code course:chosen:staging:123}；建完 RENAME 到正式键 */
+    public static final String COURSE_CHOSEN_STAGING = "course:chosen:staging:";
+
+    /** 预热锁，键形如 {@code course:preheat:lock:123}，防止两个请求同时重建 */
+    public static final String COURSE_PREHEAT_LOCK = "course:preheat:lock:";
+
+    public static final String COURSE_META_CAPACITY = "capacity";
+    public static final String COURSE_META_START = "start";
+    public static final String COURSE_META_END = "end";
+    public static final String COURSE_META_READY = "ready";
+
+    /**
      * 异步结果，键形如 {@code course:result:123:4}（课程 id + 用户 id），值是 "1"/"0"。
      * <p>
      * 消费端落库后写它，{@code GET /api/course/result} 读它 —— 前端轮询因此

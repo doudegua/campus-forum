@@ -7,6 +7,7 @@ import net.doudegua.entity.dto.Course;
 import net.doudegua.entity.dto.CourseSelection;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
+import net.doudegua.entity.vo.response.GrabLuaResult;
 import net.doudegua.mapper.CourseMapper;
 import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.service.CourseService;
@@ -44,23 +45,34 @@ import java.util.Map;
 public class CourseServiceImpl implements CourseService {
 
     /**
-     * 返回码约定：{@code -2} 未预热 / {@code -1} 重复 / {@code 0} 售罄 / {@code >=0} 扣完后的余量。
-     * <b>为什么不直接用 {@code DECR} 再判断返回值</b>：DECR 会先扣到负数，
-     * 你还得再 INCR 还回去 —— 中间那次负数在并发下会被别的请求读到。
-     * 而且 DECR 单独用挡不住"同一用户重复请求"，库存会被同一个人扣两次。
+     * 返回码：{@code -2} 未就绪 / {@code -3} 未开始 / {@code -4} 已结束 /
+     * {@code -1} 重复 / {@code 0} 售罄 / {@code >=1} 成功（剩余 = 返回值 - 1）。
      * <p>
-     * 项目里的先例写法：{@code FlowLimitFilter.COUNT_SCRIPT}、{@code LikeCountBuffer.ADD_DELTA_SCRIPT}。
+     * 所有判断必须在同一个脚本里完成：ready、时间窗、查重、余量、扣减。
+     * 拆开就是 TOCTOU。
+     * <p>
+     * 字段名在这里硬编码（ready/capacity/start/end），预热写入时用的是
+     * {@code Const.COURSE_META_*}, 两处必须一致。
      */
     private static final RedisScript<Long> SELECT_SCRIPT =
             RedisScript.of("""
-            -- KEYS[1]=chosen  KEYS[2]=ready  ARGV[1]=uid  ARGV[2]=cap
-            -- local cap = redis.call('GET', KEYS[2]) 这个加了redis预热之后再用
-            -- if not cap then return -2 end
+            -- KEYS[1]=chosen  KEYS[2]=meta  ARGV[1]=uid  ARGV[2]=nowMillis
+            if redis.call('HGET', KEYS[2], 'ready') ~= '1' then return -2 end
+
+            local cap   = tonumber(redis.call('HGET', KEYS[2], 'capacity'))
+            local start = tonumber(redis.call('HGET', KEYS[2], 'start'))
+            local endT  = tonumber(redis.call('HGET', KEYS[2], 'end'))
+            if not cap or not start or not endT then return -2 end
+
+            local now = tonumber(ARGV[2])
+            if now < start then return -3 end
+            if now > endT  then return -4 end
+
             if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return -1 end
             local used = redis.call('SCARD', KEYS[1])
-            if used >= tonumber(ARGV[2]) then return 0 end
+            if used >= cap then return 0 end
             redis.call('SADD', KEYS[1], ARGV[1])
-            return tonumber(ARGV[2]) - used          -- >=1，扣完后的剩余 = 返回值 - 1
+            return cap - used
             """, Long.class);
 
     @Resource
@@ -102,32 +114,20 @@ public class CourseServiceImpl implements CourseService {
     @Override
     public CourseSelectResultVo select(int uid, int courseId) {
 
-        Course course = courseMapper.selectById(courseId);
-        if (course == null) {
-            return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, -2L);
-        }
-        long now   = System.currentTimeMillis();
-        long start = course.getSelectStart().getTime();
-        long end   = course.getSelectEnd().getTime();
-        if (now < start) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, -2L);
-        if (now > end)   return new CourseSelectResultVo(CourseSelectResultVo.CLOSED, -2L);
-
-        // 目前redis在开放中崩溃会导致比较剩余容量所用键消失，导致超卖，下次一定
         Long r = stringRedisTemplate.execute(SELECT_SCRIPT,
-                                            List.of(Const.COURSE_CHOSEN + courseId
-                                            ),
-                                            String.valueOf(uid), String.valueOf(course.getCapacity()));
+                                            List.of(Const.COURSE_CHOSEN + courseId,
+                                                    Const.COURSE_META + courseId),
+                                            String.valueOf(uid),
+                                            String.valueOf(System.currentTimeMillis()));
 
         if (r == null) {
             log.error("选课脚本返回 null：uid={}, courseId={}", uid, courseId);
             return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, null);
         }
 
-        if(r == 0) return new CourseSelectResultVo(CourseSelectResultVo.SOLD_OUT, r);
-        if(r == -1) return new CourseSelectResultVo(CourseSelectResultVo.DUPLICATE, r);
-        if(r == -2) return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, r);
+        GrabLuaResult result = GrabLuaResult.from(r);
 
-        if(r >= 1) {
+        if (result.isSuccess()) {
             try {
                 rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE,
                         Map.of("uid", uid, "courseId", courseId));
@@ -143,10 +143,9 @@ public class CourseServiceImpl implements CourseService {
                 }
                 return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, r);
             }
-            return new CourseSelectResultVo(CourseSelectResultVo.QUEUED, r - 1);
         }
 
-        return new CourseSelectResultVo(CourseSelectResultVo.NOT_STARTED, null);
+        return new CourseSelectResultVo(result.getStatus(), GrabLuaResult.remaining(r));
     }
 
     /**
