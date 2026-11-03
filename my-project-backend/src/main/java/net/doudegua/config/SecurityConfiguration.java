@@ -45,6 +45,8 @@ public class SecurityConfiguration {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         return http
                 .authorizeHttpRequests(conf -> conf
+                        // 预热/关停是管理员操作；必须放在 anyRequest 之前
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/auth/**", "/error").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/image/*").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()

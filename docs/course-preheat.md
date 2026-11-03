@@ -1,7 +1,8 @@
 # 抢课预热：设计、实现与验收
 
 > **状态：预热/关停已实现并实测。** retry 已做 A 方案（写失败结果 + ack 丢弃，不进 DLQ）；
-> publisher confirm、权限、对账、监控仍未做。
+> 权限已加（`/api/admin/**` 需要 `ROLE_ADMIN`，见 `docs/course-admin.md`）；
+> publisher confirm、对账、监控仍未做。
 > 核心实现见 `CoursePreheatServiceImpl`；本文保留设计推导和验收步骤。
 
 ---
