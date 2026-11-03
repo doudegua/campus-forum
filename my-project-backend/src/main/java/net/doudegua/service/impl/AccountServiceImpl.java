@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
@@ -52,10 +53,14 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
         if(account == null){
             throw new UsernameNotFoundException("用户名或密码错误");
         }
+        // DB 里可能是旧的 "user"；统一成大写，roles() 再加 ROLE_ 前缀
+        String role = account.getRole() == null
+                ? "USER"
+                : account.getRole().trim().toUpperCase(Locale.ROOT);
         return User
                 .withUsername(username)
                 .password(account.getPassword())
-                .roles(account.getRole())
+                .roles(role)
                 .build();
     }
 
@@ -87,7 +92,7 @@ public class AccountServiceImpl extends ServiceImpl<AccountMapper, Account> impl
         if(this.existAccountByEmail(email)) return "Registered email";
         if(this.existAccountByUsername(username)) return "Registered username";
         String password = passwordEncoder.encode(emailRegisterVo.getPassword());
-        Account account = new Account(null, username, password, email,"user", new Date());
+        Account account = new Account(null, username, password, email,"USER", new Date());
         if(this.save(account)){
             /*
              * ⚠️ 这里必须同时建一行资料（db_account_details），否则改资料会失败。
