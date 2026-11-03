@@ -28,8 +28,20 @@ ADMIN
 
 不是 `admin`，也不是 `ROLE_ADMIN`（后者会变成 `ROLE_ROLE_ADMIN`）。
 
-现有普通用户是 `role='user'` → authority `ROLE_user`。这不影响他们登录，
-只是他们进不了 `/api/admin/**`；以后要统一大小写可以单独做一轮迁移。
+现有普通用户历史数据是 `role='user'`，登录代码会 `toUpperCase` 成 `USER`，
+authority 变成 `ROLE_USER`；不影响登录，只是他们进不了 `/api/admin/**`。
+
+## 统一角色大小写（历史库执行一次）
+
+代码已经在 `loadUserByUsername` 里做 `toUpperCase`，新注册账号也直接写 `USER`；
+老库可以手工执行：
+
+```bash
+mysql -uroot test < my-project-backend/src/main/resources/db/migration/006-normalize-roles.sql
+```
+
+脚本用 `BINARY` 比较，因为默认 collation 大小写不敏感，
+`role <> UPPER(role)` 会把所有行都过滤掉（这个坑踩过）。
 
 ## 开一个管理员（手工 SQL）
 
