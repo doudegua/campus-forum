@@ -61,6 +61,13 @@ function formatWindow(course) {
   return `${fmt(course.selectStart)} ~ ${fmt(course.selectEnd)}`
 }
 
+function buttonLabel(course) {
+  const state = stateOf(course.id)
+  if (state.busy) return '处理中'
+  const status = statusOf(course)
+  return status.canGrab ? '立即抢课' : status.label
+}
+
 function stopTimer(id) {
   const timer = timers.get(id)
   if (timer) {
@@ -154,46 +161,61 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-loading="loading" class="course-grid">
-      <el-card v-for="course in courses" :key="course.id" class="course-card" shadow="hover">
-        <div class="card-head">
-          <div>
-            <h3>{{ course.name }}</h3>
-            <div class="meta">{{ course.teacher }} · {{ course.credit }} 学分</div>
-          </div>
-          <el-tag :type="statusOf(course).type" effect="light">
-            {{ statusOf(course).label }}
-          </el-tag>
-        </div>
+    <el-card class="table-card" shadow="never">
+      <el-table v-loading="loading" :data="courses" stripe>
+        <el-table-column label="课程" min-width="190">
+          <template #default="{row}">
+            <div class="course-name">{{ row.name }}</div>
+            <div class="course-meta">{{ row.teacher }} · {{ row.credit }} 学分</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="容量" width="80" prop="capacity"/>
+        <el-table-column label="剩余" width="90">
+          <template #default="{row}">
+            <span class="remaining">{{ row.remaining }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="余量" min-width="135">
+          <template #default="{row}">
+            <el-progress :percentage="percent(row)" :show-text="false" :stroke-width="7"/>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{row}">
+            <el-tag :type="statusOf(row).type" effect="light">
+              {{ statusOf(row).label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="时间窗" min-width="190">
+          <template #default="{row}">
+            <span class="time">{{ formatWindow(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{row}">
+            <el-button
+                size="small"
+                :type="statusOf(row).canGrab ? 'primary' : 'info'"
+                :loading="stateOf(row.id).busy"
+                :disabled="!statusOf(row).canGrab || stateOf(row.id).busy"
+                @click="grab(row)">
+              {{ buttonLabel(row) }}
+            </el-button>
+            <div v-if="stateOf(row.id).message" class="action-hint">
+              {{ stateOf(row.id).message }}
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
 
-        <div class="numbers">
-          <div>
-            <b>{{ course.remaining }}</b>
-            <span>剩余 / {{ course.capacity }}</span>
-          </div>
-          <div class="percent">{{ percent(course) }}%</div>
-        </div>
-        <el-progress :percentage="percent(course)" :show-text="false" :stroke-width="7"/>
+      <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
+    </el-card>
 
-        <div class="time">
-          <span>选课时间</span>
-          <strong>{{ formatWindow(course) }}</strong>
-        </div>
-
-        <div class="card-foot">
-          <el-button
-              type="primary"
-              :loading="stateOf(course.id).busy"
-              :disabled="!statusOf(course).canGrab || stateOf(course.id).busy"
-              @click="grab(course)">
-            立即抢课
-          </el-button>
-          <span class="hint">{{ stateOf(course.id).message || '名额仅供参考，以接口结果为准' }}</span>
-        </div>
-      </el-card>
+    <div class="note">
+      <strong>看数说明</strong>
+      <span>剩余名额仅供参考；开没开、能不能抢，以接口返回为准。</span>
     </div>
-
-    <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
   </div>
 </template>
 
@@ -209,29 +231,28 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: 20px;
   padding: 26px 30px;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
   border-radius: 18px;
   color: #fff;
-  background: linear-gradient(120deg, #3b4cca 0%, #5b4bd6 45%, #8e5bd6 100%);
-  box-shadow: 0 14px 35px rgba(59, 76, 202, .22);
+  background: linear-gradient(120deg, #1f2937 0%, #334155 55%, #475569 100%);
+  box-shadow: 0 14px 35px rgba(30, 41, 59, .2);
 }
 
 .eyebrow {
   font-size: 11px;
   letter-spacing: 2px;
-  opacity: .72;
+  opacity: .68;
   margin-bottom: 8px;
 }
 
 .hero h1 {
   margin: 0;
-  font-size: 30px;
-  letter-spacing: 1px;
+  font-size: 28px;
 }
 
 .hero p {
   margin: 8px 0 0;
-  opacity: .8;
+  opacity: .75;
   font-size: 13px;
 }
 
@@ -244,100 +265,59 @@ onUnmounted(() => {
 
 .course-count {
   font-size: 13px;
-  opacity: .85;
+  opacity: .8;
 }
 
 .hero :deep(.el-button) {
   color: #fff;
 }
 
-.course-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 18px;
+.table-card {
+  border-radius: 14px;
 }
 
-.course-card {
-  border-radius: 16px;
-  border: 1px solid var(--el-border-color-lighter);
+.course-name {
+  font-weight: 600;
 }
 
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.card-head h3 {
-  margin: 0 0 6px;
-  font-size: 18px;
-}
-
-.meta {
+.course-meta {
+  margin-top: 3px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
 
-.numbers {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin: 22px 0 10px;
-}
-
-.numbers b {
-  font-size: 30px;
-  line-height: 1;
+.remaining {
+  font-size: 18px;
+  font-weight: 600;
   color: var(--el-color-primary);
 }
 
-.numbers span {
-  display: block;
-  margin-top: 5px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.percent {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-}
-
 .time {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--el-border-color-lighter);
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
 
-.time strong {
-  font-weight: 500;
+.action-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.note {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 14px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--el-fill-color-lighter);
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.note strong {
   color: var(--el-text-color-regular);
-}
-
-.card-foot {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 18px;
-}
-
-.hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.4;
-}
-
-@media (max-width: 680px) {
-  .hero {
-    flex-direction: column;
-    align-items: flex-start;
-  }
+  white-space: nowrap;
 }
 
 </style>
