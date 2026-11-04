@@ -14,7 +14,9 @@ import {
   Memo,
   Moon,
   Mute,
+  Reading,
   Search,
+  Setting,
   Sunny,
   Ticket,
   Unlock,
@@ -222,7 +224,7 @@ function userLogout() {
             <el-menu
                 router
                 :default-active="activeMenu"
-                :default-openeds="['1','2','3']"
+                :default-openeds="['1','2','3','4']"
                 style="min-height: calc(100vh - 55px)">
               <el-sub-menu index="1">
                 <template #title>
@@ -233,6 +235,12 @@ function userLogout() {
                   <template #title>
                     <el-icon><chat-dot-square/></el-icon>
                     千度贴吧
+                  </template>
+                </el-menu-item>
+                <el-menu-item index="/index/course">
+                  <template #title>
+                    <el-icon><Reading/></el-icon>
+                    选课中心
                   </template>
                 </el-menu-item>
                 <!--
@@ -291,6 +299,18 @@ function userLogout() {
                   <template #title>
                     <el-icon><Mute /></el-icon>
                     隐私设置
+                  </template>
+                </el-menu-item>
+              </el-sub-menu>
+              <el-sub-menu v-if="store.user?.role === 'ADMIN'" index="4">
+                <template #title>
+                  <el-icon><Setting/></el-icon>
+                  <span><b>管理</b></span>
+                </template>
+                <el-menu-item index="/index/admin-courses">
+                  <template #title>
+                    <el-icon><Memo/></el-icon>
+                    课程管理
                   </template>
                 </el-menu-item>
               </el-sub-menu>

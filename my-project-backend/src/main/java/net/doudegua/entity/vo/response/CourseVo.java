@@ -35,4 +35,7 @@ public class CourseVo {
     private Date selectStart;
 
     private Date selectEnd;
+
+    /** 预热是否已开放；false 时只展示，不能抢 */
+    private Boolean ready;
 }
