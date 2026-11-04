@@ -76,7 +76,7 @@ onMounted(load)
 
 <template>
   <div class="admin-page">
-    <Card :icon="Setting" title="课程管理" desc="预热后用户才能抢；关停先摘 ready，再清 chosen">
+    <Card :icon="Setting" title="课程管理">
       <div class="toolbar">
         <span>{{ courses.length }} 门课程</span>
         <el-button text @click="load">刷新</el-button>
@@ -118,11 +118,6 @@ onMounted(load)
       </el-table>
 
       <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
-
-      <div class="note">
-        <strong>看数说明</strong>
-        <span>DB 已选 = 已落库；Redis 已占 = 包含还在队列里、尚未落库的名额。两者短暂不一致是正常的。</span>
-      </div>
     </Card>
   </div>
 </template>
@@ -153,23 +148,6 @@ onMounted(load)
   margin-top: 4px;
   font-size: 11px;
   color: var(--el-text-color-secondary);
-}
-
-.note {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  margin-top: 14px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  background: var(--el-fill-color-lighter);
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.note strong {
-  color: var(--el-text-color-regular);
-  white-space: nowrap;
 }
 
 </style>

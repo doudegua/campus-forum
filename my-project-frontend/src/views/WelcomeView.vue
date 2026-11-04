@@ -21,7 +21,8 @@
       <el-image style="width: 100%;height: 100%" fit="cover" src="/login-bg.jpg"/>
     </div>
     <div class="welcome-title">
-      <div style="font-size: 30px;font-weight: bold">欢迎来到校园论坛</div>
+      <div style="font-size: 30px;font-weight: bold">欢迎来到校园一站</div>
+      <div style="margin-top: 6px;font-size: 14px;opacity: .8">一站式校园生活服务平台</div>
       <!--
         三字一组的排版保留（原来这里是某高校的校训）。
         换成了通用的校园社区说明，因为原校训会让人以为这个论坛属于那所学校 ——

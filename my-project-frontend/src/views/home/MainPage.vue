@@ -24,7 +24,7 @@ onUnmounted(() => {
 <template>
   <div style="display: flex;">
     <div style="margin: 20px;">
-      <Card title='欢迎来到校园论坛'>
+      <Card title='欢迎来到校园一站'>
         <div style="margin-top: 5px;">现在时间是{{ currentTime }}</div>
       </Card>
     </div>
