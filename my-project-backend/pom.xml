@@ -111,9 +111,21 @@
             <artifactId>spring-boot-starter-mail</artifactId>
         </dependency>
 
+        <!--
+            mail 仍然走 RabbitMQ，所以 spring-boot-starter-amqp 保留。
+            抢课链路迁到 Kafka，只加 spring-kafka，不删 AMQP。
+            版本由 spring-boot-dependencies:3.5.11 管理（spring-kafka 3.3.13 /
+            kafka-clients 3.9.1），不要手写 <version>，否则会和 Boot 管的
+            kafka-clients 版本打架，症状是启动时 NoSuchMethodError。
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
         </dependency>
 
         <dependency>

@@ -13,7 +13,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * 抢课的两条队列。
+ * 抢课的两条 Rabbit 队列。
+ * <p>
+ * ⚠️ <b>2026-11 起抢课链路已迁到 Kafka</b>（见 {@link KafkaCourseConfiguration}
+ * 和 {@code CourseSelectListener}）。这里保留队列声明和容器工厂，是为了在回滚时
+ * 不用改常量/配置就能恢复 Rabbit 版本；但<b>没有任何 {@code @RabbitListener}
+ * 绑定它们</b>，所以 Rabbit 侧不会消费抢课消息，不存在 Rabbit/Kafka 双消费。
+ * mail 队列在 {@link EmailRabbitConfiguration}，和这里完全独立。
  * <p>
  * 和 {@code RabbitConfiguration} 里那条 mail 队列分开放：那个是账号功能，
  * 这个是抢课功能，生命周期不同。混在一个类里，将来删掉抢课实验时很难拆干净。

@@ -83,6 +83,58 @@ spring:
     addresses: ${RABBITMQ_HOST:localhost}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+  # ---------------------------------------------------------------------------
+  # Kafka —— 只给抢课链路用；mail 仍在上面走 RabbitMQ，两者互不影响。
+  #
+  # 本地默认连 localhost:9092，起一个单节点即可（见 docker-compose.kafka.yml）。
+  # 部署到 compose 网络后由环境变量改成 kafka:9092。
+  # ---------------------------------------------------------------------------
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # 消息体是 CourseSelectTask record，用 JSON 而不是 Java 原生序列化：
+      # 原生序列化把类名和字段绑死，改包名/字段就等于改协议。
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        # 幂等发送：重试不会在 broker 里留下重复消息。它要求 acks=all，
+        # 且 retries > 0（下面显式配了 3）。
+        "[enable.idempotence]": true
+        "[retries]": 3
+        # send() 在拿不到元数据时最多阻塞这么久。默认 60 秒，接口会像挂了一样。
+        "[max.block.ms]": 3000
+        # 单次请求超时必须显式压下来：Kafka 要求
+        # delivery.timeout.ms >= linger.ms + request.timeout.ms，
+        # 而 request.timeout.ms 默认 30 秒 —— 只把 delivery.timeout.ms 配成 5 秒
+        # 会在 Producer 启动时直接抛 ConfigException。
+        "[request.timeout.ms]": 2000
+        # 从 send() 到"确认失败"的上限。CourseServiceImpl 的 future.get 等 6 秒，
+        # 必须比它大，否则 future 超时时消息可能还在缓冲区里，晚点又发出去了。
+        "[delivery.timeout.ms]": 5000
+    consumer:
+      # 全局默认组。@KafkaListener 上的 groupId 会覆盖它。
+      group-id: course-select
+      # ⚠️ 用 earliest 而不是 latest：抢课消息代表"已经给用户返回 QUEUED 的请求"，
+      # 消费组没有 offset 时（第一次部署/换组/offset 过期）跳过它们等于静默丢单。
+      # 重复消费是安全的：DB 复合主键 + INSERT IGNORE 幂等，结果键重复写也一样。
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      # 不配 spring.json.trusted.packages：抢课自己的消费者工厂在创建
+      # JsonDeserializer 时显式指定了 CourseSelectTask 并关闭了 type header，
+      # 不需要按消息头里的类名做白名单。留着这个 key 反而会触发
+      # JsonDeserializer "setter 与配置属性只能二选一" 的启动断言。
+    listener:
+      # ack 模式在 KafkaCourseConfiguration 的容器工厂里显式设为 MANUAL_IMMEDIATE。
+      # 不在这里设全局值，避免影响以后新增的其它 Kafka 监听器。
+      # 主题不存在时不让容器启动失败（Kafka 可能比后端晚起来）。
+      missing-topics-fatal: false
+    admin:
+      # broker 比后端晚起来时，别让整个应用启动失败。默认也是 false，写出来防手滑。
+      fail-fast: false
+
   data:
     redis:
       # Spring Boot 3 把前缀从 spring.redis.* 改成了 spring.data.redis.*。

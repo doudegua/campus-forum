@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.dto.Course;
+import net.doudegua.entity.dto.CourseSelectTask;
 import net.doudegua.entity.dto.CourseSelection;
 import net.doudegua.entity.vo.response.AdminCourseVo;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
@@ -13,13 +14,14 @@ import net.doudegua.mapper.CourseMapper;
 import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.service.CourseService;
 import net.doudegua.utils.Const;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 抢课实现 —— <b>骨架，三段核心留空</b>。
@@ -85,8 +87,21 @@ public class CourseServiceImpl implements CourseService {
     @Resource
     CourseSelectionMapper courseSelectionMapper;
 
+    /**
+     * 抢课消息生产者。用 {@code @Resource} 按名字注入而不是按类型/泛型匹配：
+     * Boot 自动配置的 KafkaTemplate Bean 声明类型是 {@code KafkaTemplate<?, ?>}，
+     * 按类型注入 {@code KafkaTemplate<String, Object>} 容易在泛型匹配上报错。
+     * 运行时的序列化仍由 yaml 里的 StringSerializer / JsonSerializer 决定。
+     */
     @Resource
-    RabbitTemplate rabbitTemplate;
+    KafkaTemplate<String, Object> kafkaTemplate;
+
+    /**
+     * 等发送结果的上限。必须大于 producer 的 {@code delivery.timeout.ms}（5 秒），
+     * 否则 future 超时的时候消息可能还在 producer 缓冲区里，稍后仍然会投递成功 ——
+     * 那时我们已经回补了 chosen 并返回 FAILURE，DB 却可能再插入一条，账就乱了。
+     */
+    private static final long SEND_TIMEOUT_SECONDS = 6;
 
     /**
      * 课程列表。
@@ -187,23 +202,44 @@ public class CourseServiceImpl implements CourseService {
 
         if (result.isSuccess()) {
             try {
-                rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE,
-                        Map.of("uid", uid, "courseId", courseId));
+                // key 用 courseId：同一门课的消息进同一个分区，消费端天然串行；
+                // 不同课程可以并行。key 用 uid 的话，同一门课的并发落库会互相打脸。
+                kafkaTemplate.send(Const.COURSE_SELECT_TOPIC,
+                                String.valueOf(courseId),
+                                new CourseSelectTask(uid, courseId))
+                        // 必须等 future：KafkaTemplate 的失败分两类，一类 send() 时同步抛，
+                        // 另一类（delivery.timeout 到期、broker 拒绝）只体现在 future 上。
+                        // 不等的话，"接口返回 QUEUED、消息其实没发出去"会完全静默。
+                        .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             } catch (Exception e) {
-                // 扣减已经发生，发送失败必须把 chosen 还回去，否则名额永远卡住
-                log.error("选课消息发送失败，回补 chosen：uid={}, courseId={}", uid, courseId, e);
-                try {
-                    stringRedisTemplate.opsForSet()
-                            .remove(Const.COURSE_CHOSEN + courseId, String.valueOf(uid));
-                } catch (Exception releaseError) {
-                    log.error("回补 chosen 失败，名额可能泄漏：uid={}, courseId={}",
-                            uid, courseId, releaseError);
+                // 扣减已经发生，发送失败必须把 chosen 还回去，否则名额永远卡住。
+                // 中断标记要还回去，否则线程池里的后续任务会一直被打断。
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
                 }
+                log.error("选课消息发送失败，回补 chosen：uid={}, courseId={}", uid, courseId, e);
+                releaseChosen(uid, courseId);
                 return new CourseSelectResultVo(CourseSelectResultVo.FAILURE, r);
             }
         }
 
         return new CourseSelectResultVo(result.getStatus(), GrabLuaResult.remaining(r));
+    }
+
+    /**
+     * 把 Lua 预扣的名额还回去。
+     * <p>
+     * 回补本身也可能失败（Redis 挂了），这时只能记 ERROR —— 名额泄漏比抛异常
+     * 更糟，但抛出去也无法改变已经发生的事实。日志里带 uid/courseId，方便对账。
+     */
+    private void releaseChosen(int uid, int courseId) {
+        try {
+            stringRedisTemplate.opsForSet()
+                    .remove(Const.COURSE_CHOSEN + courseId, String.valueOf(uid));
+        } catch (Exception releaseError) {
+            log.error("回补 chosen 失败，名额可能泄漏：uid={}, courseId={}",
+                    uid, courseId, releaseError);
+        }
     }
 
     /**

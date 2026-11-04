@@ -88,11 +88,26 @@ public class Const {
      */
     public static final String COURSE_RESULT = "course:result:";
 
-    /** 抢课主队列。durable，失败进死信，见 CourseRabbitConfiguration */
+    /*
+     * 抢课链路已从 RabbitMQ 迁到 Kafka（见 KafkaCourseConfiguration）。
+     * 下面两个 Rabbit 队列常量保留，仅用于 CourseRabbitConfiguration 里的
+     * 队列声明（回滚时不用改常量），当前没有任何消费者绑定它们。
+     */
+
+    /** 抢课主队列（Rabbit，已停用，仅保留声明）。 */
     public static final String COURSE_SELECT_QUEUE = "course.select";
 
-    /** 抢课死信队列。消息判为"重试也没用"之后进这里，不自动重投 */
+    /** 抢课死信队列（Rabbit，已停用，仅保留声明）。 */
     public static final String COURSE_SELECT_DLQ = "course.select.dlq";
+
+    /** 抢课主主题。3 分区、RF=1，key = courseId，见 KafkaCourseConfiguration */
+    public static final String COURSE_SELECT_TOPIC = "course.select";
+
+    /** 抢课死信主题。重试耗尽后进这里，不自动重放 */
+    public static final String COURSE_SELECT_DLT = COURSE_SELECT_TOPIC + ".DLT";
+
+    /** 抢课消费者组。一个组内每个分区只会有一个消费者 */
+    public static final String COURSE_SELECT_GROUP = "course-select";
 
     /**
      * 当前登录用户 id 在 request attribute 里的键名。
