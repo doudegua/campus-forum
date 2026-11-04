@@ -1,5 +1,7 @@
 <script setup>
 
+import Card from "@/components/Card.vue";
+import {Reading} from "@element-plus/icons-vue";
 import {get, post} from "@/net/index.js";
 import {ElMessage} from "element-plus";
 import {computed, onMounted, onUnmounted, reactive, ref} from "vue";
@@ -149,19 +151,12 @@ onUnmounted(() => {
 
 <template>
   <div class="course-page">
-    <div class="hero">
-      <div>
-        <div class="eyebrow">COURSE SELECTION</div>
-        <h1>选课中心</h1>
-        <p>每个账号同一门课只占一个名额，抢到后会异步落库。</p>
-      </div>
-      <div class="hero-side">
-        <span class="course-count">{{ courseCount }} 门课程</span>
+    <Card :icon="Reading" title="选课中心" desc="每个账号同一门课只占一个名额，抢到后异步落库">
+      <div class="toolbar">
+        <span>{{ courseCount }} 门课程</span>
         <el-button text @click="load">刷新</el-button>
       </div>
-    </div>
 
-    <el-card class="table-card" shadow="never">
       <el-table v-loading="loading" :data="courses" stripe>
         <el-table-column label="课程" min-width="190">
           <template #default="{row}">
@@ -210,70 +205,30 @@ onUnmounted(() => {
       </el-table>
 
       <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
-    </el-card>
 
-    <div class="note">
-      <strong>看数说明</strong>
-      <span>剩余名额仅供参考；开没开、能不能抢，以接口返回为准。</span>
-    </div>
+      <div class="note">
+        <strong>看数说明</strong>
+        <span>剩余名额仅供参考；开没开、能不能抢，以接口返回为准。</span>
+      </div>
+    </Card>
   </div>
 </template>
 
 <style scoped>
 
 .course-page {
-  padding: 22px 26px 40px;
+  max-width: 1100px;
+  margin: 20px auto;
+  padding: 0 10px;
 }
 
-.hero {
+.toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 20px;
-  padding: 26px 30px;
-  margin-bottom: 18px;
-  border-radius: 18px;
-  color: #fff;
-  background: linear-gradient(120deg, #1f2937 0%, #334155 55%, #475569 100%);
-  box-shadow: 0 14px 35px rgba(30, 41, 59, .2);
-}
-
-.eyebrow {
-  font-size: 11px;
-  letter-spacing: 2px;
-  opacity: .68;
-  margin-bottom: 8px;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: 28px;
-}
-
-.hero p {
-  margin: 8px 0 0;
-  opacity: .75;
-  font-size: 13px;
-}
-
-.hero-side {
-  display: flex;
   align-items: center;
-  gap: 10px;
-  white-space: nowrap;
-}
-
-.course-count {
+  margin: 0 4px 10px;
   font-size: 13px;
-  opacity: .8;
-}
-
-.hero :deep(.el-button) {
-  color: #fff;
-}
-
-.table-card {
-  border-radius: 14px;
+  color: var(--el-text-color-secondary);
 }
 
 .course-name {
