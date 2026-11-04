@@ -11,6 +11,25 @@ const loading = ref(false)
 const busy = reactive({})
 const actionMessage = reactive({})
 
+const createVisible = ref(false)
+const creating = ref(false)
+const createFormRef = ref(null)
+const createForm = reactive({
+  name: '',
+  teacher: '',
+  credit: 3,
+  capacity: 40,
+  selectStart: '',
+  selectEnd: ''
+})
+const createRules = {
+  name: [{required: true, message: '请输入课程名', trigger: 'blur'}],
+  credit: [{required: true, message: '请输入学分', trigger: 'change'}],
+  capacity: [{required: true, message: '请输入容量', trigger: 'change'}],
+  selectStart: [{required: true, message: '请选择开始时间', trigger: 'change'}],
+  selectEnd: [{required: true, message: '请选择结束时间', trigger: 'change'}]
+}
+
 function load() {
   loading.value = true
   get('/api/admin/course/list', data => {
@@ -72,6 +91,39 @@ function close(course) {
 
 onMounted(load)
 
+function openCreate() {
+  createForm.name = ''
+  createForm.teacher = ''
+  createForm.credit = 3
+  createForm.capacity = 40
+  createForm.selectStart = ''
+  createForm.selectEnd = ''
+  createVisible.value = true
+}
+
+function submitCreate() {
+  createFormRef.value?.validate(valid => {
+    if (!valid) return
+    creating.value = true
+    post('/api/admin/course', {
+      name: createForm.name,
+      teacher: createForm.teacher,
+      credit: createForm.credit,
+      capacity: createForm.capacity,
+      selectStart: createForm.selectStart,
+      selectEnd: createForm.selectEnd
+    }, id => {
+      creating.value = false
+      createVisible.value = false
+      ElMessage.success(`课程已创建，id=${id}`)
+      load()
+    }, message => {
+      creating.value = false
+      ElMessage.warning(message || '创建失败')
+    })
+  })
+}
+
 </script>
 
 <template>
@@ -79,7 +131,10 @@ onMounted(load)
     <Card :icon="Setting" title="课程管理">
       <div class="toolbar">
         <span>{{ courses.length }} 门课程</span>
-        <el-button text @click="load">刷新</el-button>
+        <div class="toolbar-actions">
+          <el-button type="primary" @click="openCreate">添加课程</el-button>
+          <el-button text @click="load">刷新</el-button>
+        </div>
       </div>
 
       <el-table v-loading="loading" :data="courses" stripe>
@@ -119,6 +174,43 @@ onMounted(load)
 
       <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
     </Card>
+
+    <el-dialog v-model="createVisible" title="添加课程" width="480px">
+      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
+        <el-form-item label="课程名" prop="name">
+          <el-input v-model="createForm.name" maxlength="128" placeholder="例如：数据结构与算法"/>
+        </el-form-item>
+        <el-form-item label="教师" prop="teacher">
+          <el-input v-model="createForm.teacher" maxlength="64" placeholder="选填"/>
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="学分" prop="credit">
+              <el-input-number v-model="createForm.credit" :min="0" :max="99" :step="0.5"
+                               :precision="1" style="width: 100%"/>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="容量" prop="capacity">
+              <el-input-number v-model="createForm.capacity" :min="1" :max="10000"
+                               style="width: 100%"/>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="选课开始时间" prop="selectStart">
+          <el-date-picker v-model="createForm.selectStart" type="datetime"
+                          value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%"/>
+        </el-form-item>
+        <el-form-item label="选课结束时间" prop="selectEnd">
+          <el-date-picker v-model="createForm.selectEnd" type="datetime"
+                          value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%"/>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="submitCreate">创建</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -137,6 +229,12 @@ onMounted(load)
   margin: 0 4px 10px;
   font-size: 13px;
   color: var(--el-text-color-secondary);
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .time {

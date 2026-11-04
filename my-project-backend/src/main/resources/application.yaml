@@ -40,6 +40,10 @@ server:
   # （compose 里 backend 没有暴露端口，外面本来也连不到 8080。）
   forward-headers-strategy: NATIVE
 spring:
+  jackson:
+    # 管理端提交的选课时间不带时区（YYYY-MM-DDTHH:mm:ss）；Jackson 默认按 UTC
+    # 解析，写进 MySQL 会 +8 小时。显式按本地时区解析，Date 才是用户看到的那个时刻。
+    time-zone: Asia/Shanghai
   sql:
     init:
       # always：每次启动都重放 schema.sql。

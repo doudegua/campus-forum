@@ -1,5 +1,6 @@
 package net.doudegua.service;
 
+import net.doudegua.entity.vo.request.CourseCreateVo;
 import net.doudegua.entity.vo.response.AdminCourseVo;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
@@ -27,6 +28,9 @@ public interface CourseService {
 
     /** 管理员课程列表：多返回 ready 和 chosen 人数，供预热/关停页面使用 */
     List<AdminCourseVo> listAdminCourses();
+
+    /** 新建课程。只建记录，不开放；开放仍走 preheat。返回新课程 id */
+    int createCourse(CourseCreateVo vo);
 
     /**
      * 抢课入口。
