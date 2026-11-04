@@ -1,5 +1,6 @@
 package net.doudegua.service;
 
+import net.doudegua.entity.vo.response.AdminCourseVo;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
 
@@ -23,6 +24,9 @@ public interface CourseService {
 
     /** 课程列表。remaining 的来源见 {@code CourseVo} 的注释 */
     List<CourseVo> listCourses();
+
+    /** 管理员课程列表：多返回 ready 和 chosen 人数，供预热/关停页面使用 */
+    List<AdminCourseVo> listAdminCourses();
 
     /**
      * 抢课入口。

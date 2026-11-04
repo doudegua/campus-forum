@@ -5,6 +5,7 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.dto.Course;
 import net.doudegua.entity.dto.CourseSelection;
+import net.doudegua.entity.vo.response.AdminCourseVo;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
 import net.doudegua.entity.vo.response.GrabLuaResult;
@@ -88,27 +89,84 @@ public class CourseServiceImpl implements CourseService {
     RabbitTemplate rabbitTemplate;
 
     /**
-     * 课程列表。已实现 —— 不是这轮的重点，但能验证建表/种子数据/读路径。
+     * 课程列表。
      * <p>
-     * remaining 现在用 {@code capacity - selectedCount} 算。接 Redis 之后要改成
-     * 先读 {@code course:stock:{id}}，键不存在再用这个兜底：
-     * <b>键不存在不能当成 0</b>，否则预热没做时全站显示"已满"。
+     * remaining 优先读 Redis：ready=1 时用 {@code meta.capacity - SCARD(chosen)}；
+     * 没预热（meta 不存在/ready 不是 1）才回 DB 的 {@code capacity - selectedCount}。
+     * 不能把“key 不存在”当成 0 个名额，否则没预热时全站显示已满。
      */
     @Override
     public List<CourseVo> listCourses() {
         List<Course> courses = courseMapper.selectList(
                 new LambdaQueryWrapper<Course>().orderByAsc(Course::getId));
         return courses.stream()
-                .map(c -> new CourseVo(
-                        c.getId(),
-                        c.getName(),
-                        c.getTeacher(),
-                        c.getCredit(),
-                        c.getCapacity(),
-                        c.getCapacity() - c.getSelectedCount(),
-                        c.getSelectStart(),
-                        c.getSelectEnd()))
+                .map(c -> {
+                    Map<Object, Object> meta = stringRedisTemplate.opsForHash()
+                            .entries(Const.COURSE_META + c.getId());
+                    boolean ready = "1".equals(meta.get(Const.COURSE_META_READY));
+                    int capacity = intValue(meta.get(Const.COURSE_META_CAPACITY), c.getCapacity());
+                    int selected = c.getSelectedCount() == null ? 0 : c.getSelectedCount();
+                    int remaining = ready
+                            ? Math.max(0, capacity - chosenCount(c.getId()))
+                            : Math.max(0, capacity - selected);
+                    return new CourseVo(
+                            c.getId(),
+                            c.getName(),
+                            c.getTeacher(),
+                            c.getCredit(),
+                            capacity,
+                            remaining,
+                            c.getSelectStart(),
+                            c.getSelectEnd(),
+                            ready);
+                })
                 .toList();
+    }
+
+    /** 管理员列表：DB 已落库人数 + Redis 已预扣人数同时给出，方便看差值。 */
+    @Override
+    public List<AdminCourseVo> listAdminCourses() {
+        List<Course> courses = courseMapper.selectList(
+                new LambdaQueryWrapper<Course>().orderByAsc(Course::getId));
+        return courses.stream()
+                .map(c -> {
+                    Map<Object, Object> meta = stringRedisTemplate.opsForHash()
+                            .entries(Const.COURSE_META + c.getId());
+                    boolean ready = "1".equals(meta.get(Const.COURSE_META_READY));
+                    int capacity = intValue(meta.get(Const.COURSE_META_CAPACITY), c.getCapacity());
+                    int selected = c.getSelectedCount() == null ? 0 : c.getSelectedCount();
+                    int chosen = chosenCount(c.getId());
+                    int remaining = ready
+                            ? Math.max(0, capacity - chosen)
+                            : Math.max(0, capacity - selected);
+                    return new AdminCourseVo(
+                            c.getId(),
+                            c.getName(),
+                            c.getTeacher(),
+                            c.getCredit(),
+                            capacity,
+                            selected,
+                            chosen,
+                            remaining,
+                            ready,
+                            c.getSelectStart(),
+                            c.getSelectEnd());
+                })
+                .toList();
+    }
+
+    private int chosenCount(int courseId) {
+        Long n = stringRedisTemplate.opsForSet().size(Const.COURSE_CHOSEN + courseId);
+        return n == null ? 0 : n.intValue();
+    }
+
+    private int intValue(Object raw, int fallback) {
+        if (raw == null) return fallback;
+        try {
+            return Integer.parseInt(String.valueOf(raw));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     @Override
