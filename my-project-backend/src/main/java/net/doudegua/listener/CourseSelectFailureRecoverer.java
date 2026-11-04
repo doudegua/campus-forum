@@ -5,6 +5,7 @@ import net.doudegua.entity.dto.CourseSelectTask;
 import net.doudegua.utils.Const;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
@@ -35,6 +36,7 @@ import java.time.Duration;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "course.mq", havingValue = "kafka")
 public class CourseSelectFailureRecoverer implements ConsumerRecordRecoverer {
 
     /** 和 CourseSelectListener 保持一致：结果键是缓存，48 小时后自然过期。 */

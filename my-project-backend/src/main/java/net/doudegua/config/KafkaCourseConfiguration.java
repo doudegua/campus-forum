@@ -7,6 +7,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,6 +37,7 @@ import java.util.Map;
  * 如果启动时 Kafka 不在，主题不会在稍后自动补建（需重启应用或手工建）。
  */
 @Configuration
+@ConditionalOnProperty(name = "course.mq", havingValue = "kafka")
 public class KafkaCourseConfiguration {
 
     /**

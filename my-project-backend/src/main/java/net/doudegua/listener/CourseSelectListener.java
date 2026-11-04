@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.dto.CourseSelectTask;
 import net.doudegua.service.CourseEnrollmentService;
 import net.doudegua.utils.Const;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
@@ -14,6 +15,9 @@ import java.time.Duration;
 
 /**
  * 抢课消费者（Kafka 版）。
+ * <p>
+ * <b>只在 {@code course.mq=kafka} 时启用</b>；默认 Rabbit 版见
+ * {@link CourseRabbitSelectListener}，保证 dev 不装 Kafka 也能跑。
  * <p>
  * DB 事务在 {@link CourseEnrollmentService#enroll} 里完成；本类只在事务结束后
  * 写结果键，以及 DB 判满时把 Redis 里的 chosen 名额还回去。
@@ -36,6 +40,7 @@ import java.time.Duration;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "course.mq", havingValue = "kafka")
 public class CourseSelectListener {
 
     @Resource

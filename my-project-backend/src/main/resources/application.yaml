@@ -39,6 +39,9 @@ server:
   # 所以 nginx 转发过来的会被信任，而任何绕过 nginx 直连的伪造请求不会。
   # （compose 里 backend 没有暴露端口，外面本来也连不到 8080。）
   forward-headers-strategy: NATIVE
+course:
+  # 抢课 MQ：rabbit（默认）或 kafka。dev 不装 Kafka 也能跑。
+  mq: ${COURSE_MQ:rabbit}
 spring:
   jackson:
     # 管理端提交的选课时间不带时区（YYYY-MM-DDTHH:mm:ss）；Jackson 默认按 UTC

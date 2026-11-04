@@ -16,6 +16,7 @@ import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.service.CourseService;
 import net.doudegua.utils.Const;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -98,6 +99,13 @@ public class CourseServiceImpl implements CourseService {
      */
     @Resource
     KafkaTemplate<String, Object> kafkaTemplate;
+
+    /** Rabbit 是默认链路；course.mq=kafka 时才走 Kafka。 */
+    @Resource
+    RabbitTemplate rabbitTemplate;
+
+    @Value("${course.mq:rabbit}")
+    String courseMq;
 
     /**
      * 等发送结果的上限。必须大于 producer 的 {@code delivery.timeout.ms}（5 秒），
@@ -239,15 +247,21 @@ public class CourseServiceImpl implements CourseService {
 
         if (result.isSuccess()) {
             try {
-                // key 用 courseId：同一门课的消息进同一个分区，消费端天然串行；
-                // 不同课程可以并行。key 用 uid 的话，同一门课的并发落库会互相打脸。
-                kafkaTemplate.send(Const.COURSE_SELECT_TOPIC,
-                                String.valueOf(courseId),
-                                new CourseSelectTask(uid, courseId))
-                        // 必须等 future：KafkaTemplate 的失败分两类，一类 send() 时同步抛，
-                        // 另一类（delivery.timeout 到期、broker 拒绝）只体现在 future 上。
-                        // 不等的话，"接口返回 QUEUED、消息其实没发出去"会完全静默。
-                        .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                if ("kafka".equalsIgnoreCase(courseMq)) {
+                    // key 用 courseId：同一门课的消息进同一个分区，消费端天然串行；
+                    // 不同课程可以并行。key 用 uid 的话，同一门课的并发落库会互相打脸。
+                    kafkaTemplate.send(Const.COURSE_SELECT_TOPIC,
+                                    String.valueOf(courseId),
+                                    new CourseSelectTask(uid, courseId))
+                            // 必须等 future：KafkaTemplate 的失败分两类，一类 send() 时同步抛，
+                            // 另一类（delivery.timeout 到期、broker 拒绝）只体现在 future 上。
+                            // 不等的话，"接口返回 QUEUED、消息其实没发出去"会完全静默。
+                            .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                } else {
+                    // 默认 Rabbit：dev 不装 Kafka 也能跑。
+                    rabbitTemplate.convertAndSend(Const.COURSE_SELECT_QUEUE,
+                            Map.of("uid", uid, "courseId", courseId));
+                }
             } catch (Exception e) {
                 // 扣减已经发生，发送失败必须把 chosen 还回去，否则名额永远卡住。
                 // 中断标记要还回去，否则线程池里的后续任务会一直被打断。
