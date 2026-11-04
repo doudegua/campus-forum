@@ -151,7 +151,7 @@ onUnmounted(() => {
 
 <template>
   <div class="course-page">
-    <Card :icon="Reading" title="选课中心" desc="每个账号同一门课只占一个名额，抢到后异步落库">
+    <Card :icon="Reading" title="选课中心">
       <div class="toolbar">
         <span>{{ courseCount }} 门课程</span>
         <el-button text @click="load">刷新</el-button>
@@ -205,11 +205,6 @@ onUnmounted(() => {
       </el-table>
 
       <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
-
-      <div class="note">
-        <strong>看数说明</strong>
-        <span>剩余名额仅供参考；开没开、能不能抢，以接口返回为准。</span>
-      </div>
     </Card>
   </div>
 </template>
@@ -256,23 +251,6 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 11px;
   color: var(--el-text-color-secondary);
-}
-
-.note {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  margin-top: 14px;
-  padding: 12px 16px;
-  border-radius: 10px;
-  background: var(--el-fill-color-lighter);
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-
-.note strong {
-  color: var(--el-text-color-regular);
-  white-space: nowrap;
 }
 
 </style>
