@@ -1,5 +1,7 @@
 <script setup>
 
+import Card from "@/components/Card.vue";
+import {Setting} from "@element-plus/icons-vue";
 import {get, post} from "@/net/index.js";
 import {ElMessage} from "element-plus";
 import {onMounted, reactive, ref} from "vue";
@@ -74,16 +76,12 @@ onMounted(load)
 
 <template>
   <div class="admin-page">
-    <div class="hero">
-      <div>
-        <div class="eyebrow">ADMIN · COURSE</div>
-        <h1>课程管理</h1>
-        <p>预热后用户才能抢；关停先摘 ready，再清 chosen。</p>
+    <Card :icon="Setting" title="课程管理" desc="预热后用户才能抢；关停先摘 ready，再清 chosen">
+      <div class="toolbar">
+        <span>{{ courses.length }} 门课程</span>
+        <el-button text @click="load">刷新</el-button>
       </div>
-      <el-button text @click="load">刷新</el-button>
-    </div>
 
-    <el-card class="table-card" shadow="never">
       <el-table v-loading="loading" :data="courses" stripe>
         <el-table-column prop="id" label="ID" width="70"/>
         <el-table-column prop="name" label="课程" min-width="150"/>
@@ -118,58 +116,32 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
 
-    <div class="note">
-      <strong>看数说明</strong>
-      <span>DB 已选 = 已落库；Redis 已占 = 包含还在队列里、尚未落库的名额。两者短暂不一致是正常的。</span>
-    </div>
+      <el-empty v-if="!loading && courses.length === 0" description="暂无课程"/>
+
+      <div class="note">
+        <strong>看数说明</strong>
+        <span>DB 已选 = 已落库；Redis 已占 = 包含还在队列里、尚未落库的名额。两者短暂不一致是正常的。</span>
+      </div>
+    </Card>
   </div>
 </template>
 
 <style scoped>
 
 .admin-page {
-  padding: 22px 26px 40px;
+  max-width: 1200px;
+  margin: 20px auto;
+  padding: 0 10px;
 }
 
-.hero {
+.toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  gap: 20px;
-  padding: 26px 30px;
-  margin-bottom: 18px;
-  border-radius: 18px;
-  color: #fff;
-  background: linear-gradient(120deg, #1f2937 0%, #334155 55%, #475569 100%);
-  box-shadow: 0 14px 35px rgba(30, 41, 59, .2);
-}
-
-.eyebrow {
-  font-size: 11px;
-  letter-spacing: 2px;
-  opacity: .68;
-  margin-bottom: 8px;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: 28px;
-}
-
-.hero p {
-  margin: 8px 0 0;
-  opacity: .75;
+  align-items: center;
+  margin: 0 4px 10px;
   font-size: 13px;
-}
-
-.hero :deep(.el-button) {
-  color: #fff;
-}
-
-.table-card {
-  border-radius: 14px;
+  color: var(--el-text-color-secondary);
 }
 
 .time {
