@@ -32,7 +32,6 @@ function userLogin() {
 
 <template>
   <div style="text-align: center;margin: 0 20px">
-    This is login page.
     <div style="margin-top: 150px;">
       <div style="font-weight: bold;font-size: 25px">
         登录
