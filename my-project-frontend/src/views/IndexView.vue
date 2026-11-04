@@ -1,5 +1,6 @@
 <script setup>
 import {get, logout} from "@/net/index.js";
+import BrandLogo from "@/components/BrandLogo.vue";
 import router from "@/router/index.js";
 import {useStore} from "@/store";
 import {computed, nextTick, onBeforeUnmount, onMounted, reactive, ref} from "vue";
@@ -151,7 +152,7 @@ function userLogout() {
     <el-container style="height: 100%" v-if="!loading">
       <el-header class="main-content-header">
         <div style="flex: 1">
-          <el-image class="logo" src="https://element-plus.org/images/element-plus-logo.svg"></el-image>
+          <BrandLogo/>
         </div>
         <div>
           <el-button @click="userLogout">退出登录</el-button>
@@ -229,18 +230,12 @@ function userLogout() {
               <el-sub-menu index="1">
                 <template #title>
                   <el-icon><location/></el-icon>
-                  <span><b>校园论坛</b></span>
+                  <span><b>内容社区</b></span>
                 </template>
                 <el-menu-item index="/index/tieba">
                   <template #title>
                     <el-icon><chat-dot-square/></el-icon>
                     千度贴吧
-                  </template>
-                </el-menu-item>
-                <el-menu-item index="/index/course">
-                  <template #title>
-                    <el-icon><Reading/></el-icon>
-                    选课中心
                   </template>
                 </el-menu-item>
                 <!--
@@ -260,15 +255,10 @@ function userLogout() {
                   <el-icon><FullScreen /></el-icon>
                   <span><b>探索·发现</b></span>
                 </template>
-                <!--
-                  空子菜单会被 Element Plus 渲染成一个点开什么都没有的面板，
-                  看起来像没做完。所以放一个禁用态的占位项说明"这里以后会有东西"，
-                  比留个空壳强。disabled 让它点不动，也不会误导成可用的功能。
-                -->
-                <el-menu-item disabled>
+                <el-menu-item index="/index/course">
                   <template #title>
-                    <el-icon><Memo /></el-icon>
-                    敬请期待
+                    <el-icon><Reading/></el-icon>
+                    选课中心
                   </template>
                 </el-menu-item>
               </el-sub-menu>
@@ -408,7 +398,7 @@ function userLogout() {
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  .logo{
+  .brand-logo{
     height: 32px;
   }
   .user-info{

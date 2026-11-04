@@ -6,23 +6,28 @@
 
 | 路由 | 页面 | 说明 |
 |---|---|---|
-| `/index/course` | 选课中心 | 课程卡片、剩余名额、状态、抢课按钮、结果轮询 |
-| `/index/admin-courses` | 课程管理 | 管理员表格、预热/关停、DB 已选 vs Redis 已占 |
+| `/index/course` | 选课中心 | 课程表格、剩余名额、状态、抢课按钮、结果轮询 |
+| `/index/admin-courses` | 课程管理 | 管理员表格、添加课程、预热/关停、DB 已选 vs Redis 已占 |
 
 侧栏入口：
 
-- “校园论坛 → 选课中心”对所有登录用户显示；
+- “探索·发现 → 选课中心”对所有登录用户显示；
 - “管理 → 课程管理”只在 `store.user.role === 'ADMIN'` 时显示，接口本身还有 `ROLE_ADMIN` 兜底。
+
+> 截图是浅色模式；两页都复用 `Card.vue` 的边框/背景变量，深色模式由 Element Plus 主题自动切换。
 
 ![用户选课页](course-ui-user.png)
 
 ![管理员课程页](course-ui-admin.png)
+
+![添加课程](course-create-dialog.png)
 
 ## 依赖的接口
 
 ```text
 GET  /api/course/list          # 用户：remaining 已优先读 Redis chosen
 GET  /api/admin/course/list    # 管理员：多返回 ready / chosenCount
+POST /api/admin/course         # 管理员：新建课程（只建记录，不开放）
 POST /api/course/select        # 抢课
 GET  /api/course/result        # 轮询最终结果
 POST /api/admin/course/preheat # 预热
@@ -54,9 +59,11 @@ http://127.0.0.1:5173/index/admin-courses
 管理员页需要账号 `role='ADMIN'` 并重新登录；只改 JWT 不行，因为侧栏读的是
 `/api/user/info` 返回的角色。
 
+添加课程只做“建记录”，建完还要点“预热/开放”用户才能抢；本轮不做编辑/删除。
+
 ## 还没做
 
-- 视觉稿/设计系统、响应式细节、浅色模式实际检查；
+- 视觉稿/设计系统、响应式细节；浅色/深色已各看一遍；
 - “我的选课”列表（需要查 `db_course_selection`）；
 - 取消选课、候补、通知；
 - 抢课结果的前端持久化（刷新后不保留“排队中”状态，只从接口重新查）。

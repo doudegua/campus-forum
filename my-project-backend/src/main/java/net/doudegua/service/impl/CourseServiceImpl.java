@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.doudegua.entity.dto.Course;
 import net.doudegua.entity.dto.CourseSelectTask;
 import net.doudegua.entity.dto.CourseSelection;
+import net.doudegua.entity.vo.request.CourseCreateVo;
 import net.doudegua.entity.vo.response.AdminCourseVo;
 import net.doudegua.entity.vo.response.CourseSelectResultVo;
 import net.doudegua.entity.vo.response.CourseVo;
@@ -14,6 +15,8 @@ import net.doudegua.mapper.CourseMapper;
 import net.doudegua.mapper.CourseSelectionMapper;
 import net.doudegua.service.CourseService;
 import net.doudegua.utils.Const;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -102,6 +105,40 @@ public class CourseServiceImpl implements CourseService {
      * 那时我们已经回补了 chosen 并返回 FAILURE，DB 却可能再插入一条，账就乱了。
      */
     private static final long SEND_TIMEOUT_SECONDS = 6;
+
+    @Override
+    public int createCourse(CourseCreateVo vo) {
+        String name = vo.getName() == null ? "" : vo.getName().trim();
+        if (name.isEmpty()) {
+            throw new IllegalArgumentException("课程名不能为空");
+        }
+        if (!vo.getSelectEnd().after(vo.getSelectStart())) {
+            throw new IllegalArgumentException("结束时间必须晚于开始时间");
+        }
+
+        Long exists = courseMapper.selectCount(
+                new LambdaQueryWrapper<Course>().eq(Course::getName, name));
+        if (exists != null && exists > 0) {
+            throw new IllegalArgumentException("课程名已存在");
+        }
+
+        Course course = new Course();
+        course.setName(name);
+        course.setTeacher(vo.getTeacher() == null ? "" : vo.getTeacher().trim());
+        course.setCredit(vo.getCredit());
+        course.setCapacity(vo.getCapacity());
+        course.setSelectedCount(0);
+        course.setSelectStart(vo.getSelectStart());
+        course.setSelectEnd(vo.getSelectEnd());
+
+        try {
+            courseMapper.insert(course);
+        } catch (DuplicateKeyException e) {
+            // 并发建同名课时，唯一索引是最后一道防线
+            throw new IllegalArgumentException("课程名已存在");
+        }
+        return course.getId();
+    }
 
     /**
      * 课程列表。
