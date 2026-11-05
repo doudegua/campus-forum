@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @Validated
 @RestController
 @RequestMapping("/api/auth")
@@ -86,5 +88,28 @@ public class AuthorizeController {
     @PostMapping("/reset-password")
     public RestBean<Void> resetPassword(@RequestBody @Valid EmailResetVo vo) {
         return ControllerUtils.messageHandle(vo, accountService::resetEmailAccountPassword);
+    }
+
+    /**
+     * 公开的演示模式状态查询，供前端决定登录页 / 注册页显示什么。
+     * <p>
+     * <b>为什么需要这个接口，而不是让前端读环境变量：</b>
+     * 前端的 {@code VITE_DEMO_ENABLED} 是**构建期**打进 bundle 的常量，
+     * 后端的 {@code app.demo.*} 是**运行期**读的配置，两者各自独立。
+     * 如果前端靠构建期变量去猜"注册关没关"，那么只在 .env 里改了后端配置、
+     * 重启后端之后，前端不会跟着变 —— 于是又会出现
+     * "界面给了「立即注册」入口、点进去后端 403"的漂移。
+     * 让前端向后端要状态，就只有**一个真相来源**。
+     * <p>
+     * 返回两个字段而不是一个布尔：注册页只关心 registrationEnabled，
+     * 而登录页或首页可能还想知道"这是不是一个演示站"（例如显示一条提示）。
+     * 语义明确的字段比一个 boolean 更不容易在下一次改动中被误用。
+     */
+    @GetMapping("/demo-status")
+    public RestBean<Map<String, Boolean>> demoStatus() {
+        return RestBean.success(Map.of(
+                "demoMode", demoEnabled,
+                "registrationEnabled", !mailEntryClosed()
+        ));
     }
 }
