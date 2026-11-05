@@ -66,6 +66,23 @@ public class AccountProfileServiceImpl extends ServiceImpl<AccountProfileMapper,
 
     @Override
     public String updateProfile(int id, UpdateProfileVo updateProfileVo) {
+        // ── 演示账号保护 ──────────────────────────────────────────────────
+        // 前端登录页的「访客体验」按钮用的是写死的 demo / demo123。
+        // 这个接口能改 username，而 username 是登录凭据的一部分 ——
+        // 访客只要把 demo 改个名，那个按钮就**永久失效**，
+        // 而且是静默失效：没人会来告诉你，你就带着一个进不去的链接去投简历。
+        //
+        // 所以这里必须拦。判定用 username 或 email 双条件：
+        // username 可能已经被改过（在加这道防线之前），email 是兜底。
+        // 注意只拦「改成别的名字」，原样提交（很多前端会整表单提交）要放行。
+        Account current = accountMapper.selectById(id);
+        boolean isDemoAccount = current != null
+                && ("demo".equals(current.getUsername())
+                    || "demo@example.com".equals(current.getEmail()));
+        if (isDemoAccount && !"demo".equals(updateProfileVo.getUsername())) {
+            return "演示账号不允许修改用户名";
+        }
+
         // 改用户名落在 db_account 上，所以走的是 AccountMapper 而不是本类的 this.update()。
         // mapper.update(实体, Wrapper)：第一个参数传 null 表示"要 SET 的列我自己写"，
         // 返回的是**受影响行数**。

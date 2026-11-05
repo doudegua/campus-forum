@@ -53,6 +53,15 @@ const router = createRouter({
                     name: 'tieba',
                     component: () => import('@/views/forum/Tieba.vue'),
                 }, {
+                    path: 'course',
+                    name: 'course-selection',
+                    component: () => import('@/views/course/CourseSelection.vue'),
+                }, {
+                    // 管理员页面：菜单只对 ADMIN 显示；接口本身还有 ROLE_ADMIN 兜底
+                    path: 'admin-courses',
+                    name: 'course-admin',
+                    component: () => import('@/views/course/CourseAdmin.vue'),
+                }, {
                     // 帖子详情。挂在 IndexView 底下，所以顶部栏和右侧栏都不会卸载，
                     // 只有 <router-view> 里的内容被换掉。
                     // 有独立的 URL 才能分享、刷新、收藏，后退键也才有意义 ——

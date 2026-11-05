@@ -251,7 +251,7 @@ async function uploadAvatar(options) {
           <div>
             账号注册时间：{{registerTime}}
           </div>
-          <div style="color: gray">欢迎来到校园论坛</div>
+          <div style="color: gray">欢迎来到校园一站</div>
         </card>
       </div>
 

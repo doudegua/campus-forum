@@ -38,6 +38,77 @@ public class Const {
      */
     public static final String LIKE_DIRTY = "like:dirty";
 
+    /* ==================== 抢课 ==================== */
+
+    public static final String COURSE_READY = "course:ready:";
+    /**
+     * 预扣库存，键形如 {@code course:stock:123}，值是"还能抢几个"。
+     * <p>
+     * ⚠️ <b>键不存在 ≠ 0</b>。不存在表示"还没预热"，接口要回 NOT_STARTED；
+     * 当成 0 的话，预热一旦失败，全站课程立刻显示售罄。
+     * 这个键是闸门不是缓存，丢了不能靠 DB 再算一遍就继续卖 ——
+     * 必须先停抢、对账、再重新预热（见 docs/course-selection.md）。
+     */
+    public static final String COURSE_STOCK = "course:stock:";
+
+    /**
+     * 这门课已经抢到的人（SET），键形如 {@code course:chosen:123}，成员是 uid。
+     * <p>
+     * 它的唯一作用是<b>在 Lua 里挡重复请求</b>：同一个人并发点 10 次，
+     * 只会有一次走到 DECR。光靠数据库的唯一键不够 —— 那时库存已经被扣掉 9 次了。
+     * 预热时要和 stock 一起从 {@code db_course_selection} 重建，
+     * 只补 stock 不补它，重复请求会再扣一次库存。
+     */
+    public static final String COURSE_CHOSEN = "course:chosen:";
+
+    /**
+     * 课程元数据（Hash），键形如 {@code course:meta:123}。
+     * 字段：capacity / start / end / ready，时间存 epoch 毫秒。
+     * ready 必须最后写，写之前 select 一律返回"未就绪"。
+     */
+    public static final String COURSE_META = "course:meta:";
+
+    /** 预热用的临时集合，键形如 {@code course:chosen:staging:123}；建完 RENAME 到正式键 */
+    public static final String COURSE_CHOSEN_STAGING = "course:chosen:staging:";
+
+    /** 预热锁，键形如 {@code course:preheat:lock:123}，防止两个请求同时重建 */
+    public static final String COURSE_PREHEAT_LOCK = "course:preheat:lock:";
+
+    public static final String COURSE_META_CAPACITY = "capacity";
+    public static final String COURSE_META_START = "start";
+    public static final String COURSE_META_END = "end";
+    public static final String COURSE_META_READY = "ready";
+
+    /**
+     * 异步结果，键形如 {@code course:result:123:4}（课程 id + 用户 id），值是 "1"/"0"。
+     * <p>
+     * 消费端落库后写它，{@code GET /api/course/result} 读它 —— 前端轮询因此
+     * 只打 Redis，不打 DB。它<b>带 TTL</b>：这是缓存，不是账本；
+     * 权威数据永远是 {@code db_course_selection}。
+     */
+    public static final String COURSE_RESULT = "course:result:";
+
+    /*
+     * 抢课链路已从 RabbitMQ 迁到 Kafka（见 KafkaCourseConfiguration）。
+     * 下面两个 Rabbit 队列常量保留，仅用于 CourseRabbitConfiguration 里的
+     * 队列声明（回滚时不用改常量），当前没有任何消费者绑定它们。
+     */
+
+    /** 抢课主队列（Rabbit，已停用，仅保留声明）。 */
+    public static final String COURSE_SELECT_QUEUE = "course.select";
+
+    /** 抢课死信队列（Rabbit，已停用，仅保留声明）。 */
+    public static final String COURSE_SELECT_DLQ = "course.select.dlq";
+
+    /** 抢课主主题。3 分区、RF=1，key = courseId，见 KafkaCourseConfiguration */
+    public static final String COURSE_SELECT_TOPIC = "course.select";
+
+    /** 抢课死信主题。重试耗尽后进这里，不自动重放 */
+    public static final String COURSE_SELECT_DLT = COURSE_SELECT_TOPIC + ".DLT";
+
+    /** 抢课消费者组。一个组内每个分区只会有一个消费者 */
+    public static final String COURSE_SELECT_GROUP = "course-select";
+
     /**
      * 当前登录用户 id 在 request attribute 里的键名。
      * <p>

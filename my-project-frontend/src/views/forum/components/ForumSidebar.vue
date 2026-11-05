@@ -24,7 +24,7 @@ const today = computed(() => {
         </div>
         <el-divider style="margin: 10px 0"/>
         <div style="font-size: 14px; margin: 10px; color: gray">
-          这里是校园论坛。发帖前先选个版块，图片不超过 900KB。
+          这里是校园一站的内容社区。发帖前先选个版块，图片不超过 900KB。
           理性发言，别发广告，你发了管理员也不一定能发现，管理员发现了也睁一只眼闭一只眼，不然得苦哈哈的上云用sql语句一点一点改。
         </div>
       </card-light>

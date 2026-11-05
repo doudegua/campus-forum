@@ -1,0 +1,76 @@
+# ===========================================================================
+# docker-compose.kafka.yml —— 只起一个单节点 Kafka（KRaft，无 ZooKeeper）
+#
+# 和主 docker-compose.yml 分开：抢课链路迁移是实验分支，主 compose 一行不动，
+# RabbitMQ（mail 还在用）也不受影响。需要 Kafka 时单独起这一份。
+#
+# 用法：
+#     docker compose -f docker-compose.kafka.yml up -d
+#     docker compose -f docker-compose.kafka.yml logs -f kafka
+#     docker compose -f docker-compose.kafka.yml down       # 数据保留在卷里
+#     docker compose -f docker-compose.kafka.yml down -v    # 连数据一起删
+#
+# 宿主机端口就是 9092，对应后端默认的 KAFKA_BOOTSTRAP_SERVERS=localhost:9092。
+# 应用启动时会自动创建 course.select（3 分区）和 course.select.DLT。
+#
+# ⚠️ 内存：KAFKA_HEAP_OPTS 固定 512m。不设的话镜像默认 -Xmx1G -Xms1G，
+#    再压到 256m 容易在创建内部主题时 OOM。宿主机总占用约 600–700 MiB。
+# ===========================================================================
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: campus-forum-kafka
+    restart: unless-stopped
+    environment:
+      # --- KRaft：一个进程同时当 broker 和 controller ---
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 数据卷是用哪个 cluster id 格式化的，在配置里看得见。
+      # ⚠️ 一旦卷已经格式化，就不要再改这个值（卷里的 meta.properties 记的是旧 id，
+      #    改了 broker 直接起不来）。换新 id 前先 down -v。
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+      # --- listener：宿主机通过 localhost:9092 访问 ---
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # 单节点 controller quorum 只有自己
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+
+      # --- 单节点必须把内部主题副本数改成 1 ---
+      # 默认是 3；单节点凑不出 3 个副本，__consumer_offsets 建不出来，
+      # 消费组用不了，日志里会是一片 ERROR。
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+
+      # --- 关掉自动建主题 ---
+      # 主题由后端的 NewTopic Bean 显式声明（分区数才能被 review）。
+      # 打开自动建的话，拼错一个主题名不会报错，而是悄悄建个新主题把消息丢进去。
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      # --- JVM 堆 ---
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+      # 容器数据目录，必须和下面的 volume 路径一致；
+      # 镜像默认在 /tmp，不显式改的话卷挂上也是空的，down 一次 offset 全丢。
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    healthcheck:
+      # 不用 nc 探端口：端口通了不代表 broker 可用（可能还在格式化/选举）。
+      # 这个脚本会真的发一次 ApiVersions 请求。
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  kafka-data:

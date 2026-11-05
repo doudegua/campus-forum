@@ -374,6 +374,25 @@ services:
       # 所以指向挂载进来的 /app/config/ed25519-private.pem。
       # 文件不存在时应用照样启动，只是天气接口失败（已实测）。
       QWEATHER_PRIVATE_KEY_LOCATION: file:/app/config/ed25519-private.pem
+      # 访客演示模式开关（对应 application.yaml 里的 app.demo.*）。
+      #
+      # 为什么必须写在这里：只把它们放进根目录的 .env 是**进不了容器**的。
+      # compose 只会透传 environment 里显式列出的变量 ——
+      # 不写这两行，你在 .env 里设了 DEMO_REGISTRATION_ENABLED=false，
+      # 线上照样允许注册，而你会以为已经关了。
+      #
+      # 三种组合：
+      #   DEMO_ENABLED=true  + REGISTRATION_ENABLED=false → 公网演示（推荐）
+      #   DEMO_ENABLED=true  + REGISTRATION_ENABLED=true  → 本地开发默认
+      #   DEMO_ENABLED=false + 任意                        → 演示限制全解除
+      #
+      # ⚠️ 必须用 ${VAR:-true}，不能用 ${VAR:-}。
+      #    后者在变量未设置时塞进去的是**空字符串**，
+      #    而 application.yaml 里写的是 ${DEMO_ENABLED:true} ——
+      #    空字符串属于"变量存在但为空"，不会退回默认值。
+      #    这和上面 MAIL_USERNAME 那个坑是同一类：不存在 ≠ 存在但为空。
+      DEMO_ENABLED: ${DEMO_ENABLED:-true}
+      DEMO_REGISTRATION_ENABLED: ${DEMO_REGISTRATION_ENABLED:-true}
     volumes:
       # 挂**目录**而不是单个文件 —— 这一点是刻意的：
       #   挂不存在的单个文件时，Docker 会在宿主机上建一个**同名目录**，

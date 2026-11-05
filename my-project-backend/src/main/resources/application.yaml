@@ -39,7 +39,45 @@ server:
   # 所以 nginx 转发过来的会被信任，而任何绕过 nginx 直连的伪造请求不会。
   # （compose 里 backend 没有暴露端口，外面本来也连不到 8080。）
   forward-headers-strategy: NATIVE
+# ---------------------------------------------------------------------------
+# 访客演示模式
+#
+# 公网访客不注册也能体验：前端登录页用写死的 demo 账号调用**正常的**
+# /api/auth/login（不新增免密接口），后端这边只负责"演示期间关掉注册入口"。
+#
+# 为什么不新建 ROLE_DEMO / 不加权限：
+#   demo 账号能做的普通 USER 都能做；真正拦住"改密码"的是它绑定的邮箱
+#   demo@example.com —— example.com 按 RFC 2606 永远收不到信，而改密码必须
+#   先拿到邮箱验证码。权限体系一行都不用动。
+#
+# 两个开关的关系（改之前先看这张表）：
+#   demo.enabled=true  + registration-enabled=true  本地开发默认：按钮在，注册也照常
+#   demo.enabled=true  + registration-enabled=false 公网演示：按钮在，注册/验证码关闭
+#   demo.enabled=false + registration-enabled=任意   演示模式整个关掉，恢复普通站点
+#
+# 默认值刻意选"两个都 true"，是为了不影响本地开发（本地还能注册）。
+# ⚠️ 部署到公网时一定要把 DEMO_REGISTRATION_ENABLED 设成 false，
+#    否则陌生人仍然能注册。注意 compose 的 backend 服务只透传 environment
+#    里列出的变量，只写进根目录 .env 是进不了容器的（部署步骤里有说明）。
+# ---------------------------------------------------------------------------
+app:
+  demo:
+    # 演示模式总开关。true = 站点按"访客演示"的姿态运行：
+    # 前端显示「访客体验」入口，后端配合下面的开关关闭需要发邮件的入口。
+    enabled: ${DEMO_ENABLED:true}
+    # 演示模式下是否仍允许自助注册、发送验证码。
+    # true（默认）= 允许，本地开发照旧；false = 关闭，公网演示环境用这个。
+    # 关闭时 /api/auth/register 和 /api/auth/ask-code 会返回明确的业务错误
+    # （见 AuthorizeController），而不是 500 或一个看不懂的认证失败。
+    registration-enabled: ${DEMO_REGISTRATION_ENABLED:true}
+course:
+  # 抢课 MQ：rabbit（默认）或 kafka。dev 不装 Kafka 也能跑。
+  mq: ${COURSE_MQ:rabbit}
 spring:
+  jackson:
+    # 管理端提交的选课时间不带时区（YYYY-MM-DDTHH:mm:ss）；Jackson 默认按 UTC
+    # 解析，写进 MySQL 会 +8 小时。显式按本地时区解析，Date 才是用户看到的那个时刻。
+    time-zone: Asia/Shanghai
   sql:
     init:
       # always：每次启动都重放 schema.sql。
@@ -83,6 +121,58 @@ spring:
     addresses: ${RABBITMQ_HOST:localhost}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+  # ---------------------------------------------------------------------------
+  # Kafka —— 只给抢课链路用；mail 仍在上面走 RabbitMQ，两者互不影响。
+  #
+  # 本地默认连 localhost:9092，起一个单节点即可（见 docker-compose.kafka.yml）。
+  # 部署到 compose 网络后由环境变量改成 kafka:9092。
+  # ---------------------------------------------------------------------------
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # 消息体是 CourseSelectTask record，用 JSON 而不是 Java 原生序列化：
+      # 原生序列化把类名和字段绑死，改包名/字段就等于改协议。
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        # 幂等发送：重试不会在 broker 里留下重复消息。它要求 acks=all，
+        # 且 retries > 0（下面显式配了 3）。
+        "[enable.idempotence]": true
+        "[retries]": 3
+        # send() 在拿不到元数据时最多阻塞这么久。默认 60 秒，接口会像挂了一样。
+        "[max.block.ms]": 3000
+        # 单次请求超时必须显式压下来：Kafka 要求
+        # delivery.timeout.ms >= linger.ms + request.timeout.ms，
+        # 而 request.timeout.ms 默认 30 秒 —— 只把 delivery.timeout.ms 配成 5 秒
+        # 会在 Producer 启动时直接抛 ConfigException。
+        "[request.timeout.ms]": 2000
+        # 从 send() 到"确认失败"的上限。CourseServiceImpl 的 future.get 等 6 秒，
+        # 必须比它大，否则 future 超时时消息可能还在缓冲区里，晚点又发出去了。
+        "[delivery.timeout.ms]": 5000
+    consumer:
+      # 全局默认组。@KafkaListener 上的 groupId 会覆盖它。
+      group-id: course-select
+      # ⚠️ 用 earliest 而不是 latest：抢课消息代表"已经给用户返回 QUEUED 的请求"，
+      # 消费组没有 offset 时（第一次部署/换组/offset 过期）跳过它们等于静默丢单。
+      # 重复消费是安全的：DB 复合主键 + INSERT IGNORE 幂等，结果键重复写也一样。
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      # 不配 spring.json.trusted.packages：抢课自己的消费者工厂在创建
+      # JsonDeserializer 时显式指定了 CourseSelectTask 并关闭了 type header，
+      # 不需要按消息头里的类名做白名单。留着这个 key 反而会触发
+      # JsonDeserializer "setter 与配置属性只能二选一" 的启动断言。
+    listener:
+      # ack 模式在 KafkaCourseConfiguration 的容器工厂里显式设为 MANUAL_IMMEDIATE。
+      # 不在这里设全局值，避免影响以后新增的其它 Kafka 监听器。
+      # 主题不存在时不让容器启动失败（Kafka 可能比后端晚起来）。
+      missing-topics-fatal: false
+    admin:
+      # broker 比后端晚起来时，别让整个应用启动失败。默认也是 false，写出来防手滑。
+      fail-fast: false
+
   data:
     redis:
       # Spring Boot 3 把前缀从 spring.redis.* 改成了 spring.data.redis.*。
