@@ -39,6 +39,37 @@ server:
   # 所以 nginx 转发过来的会被信任，而任何绕过 nginx 直连的伪造请求不会。
   # （compose 里 backend 没有暴露端口，外面本来也连不到 8080。）
   forward-headers-strategy: NATIVE
+# ---------------------------------------------------------------------------
+# 访客演示模式
+#
+# 公网访客不注册也能体验：前端登录页用写死的 demo 账号调用**正常的**
+# /api/auth/login（不新增免密接口），后端这边只负责"演示期间关掉注册入口"。
+#
+# 为什么不新建 ROLE_DEMO / 不加权限：
+#   demo 账号能做的普通 USER 都能做；真正拦住"改密码"的是它绑定的邮箱
+#   demo@example.com —— example.com 按 RFC 2606 永远收不到信，而改密码必须
+#   先拿到邮箱验证码。权限体系一行都不用动。
+#
+# 两个开关的关系（改之前先看这张表）：
+#   demo.enabled=true  + registration-enabled=true  本地开发默认：按钮在，注册也照常
+#   demo.enabled=true  + registration-enabled=false 公网演示：按钮在，注册/验证码关闭
+#   demo.enabled=false + registration-enabled=任意   演示模式整个关掉，恢复普通站点
+#
+# 默认值刻意选"两个都 true"，是为了不影响本地开发（本地还能注册）。
+# ⚠️ 部署到公网时一定要把 DEMO_REGISTRATION_ENABLED 设成 false，
+#    否则陌生人仍然能注册。注意 compose 的 backend 服务只透传 environment
+#    里列出的变量，只写进根目录 .env 是进不了容器的（部署步骤里有说明）。
+# ---------------------------------------------------------------------------
+app:
+  demo:
+    # 演示模式总开关。true = 站点按"访客演示"的姿态运行：
+    # 前端显示「访客体验」入口，后端配合下面的开关关闭需要发邮件的入口。
+    enabled: ${DEMO_ENABLED:true}
+    # 演示模式下是否仍允许自助注册、发送验证码。
+    # true（默认）= 允许，本地开发照旧；false = 关闭，公网演示环境用这个。
+    # 关闭时 /api/auth/register 和 /api/auth/ask-code 会返回明确的业务错误
+    # （见 AuthorizeController），而不是 500 或一个看不懂的认证失败。
+    registration-enabled: ${DEMO_REGISTRATION_ENABLED:true}
 course:
   # 抢课 MQ：rabbit（默认）或 kafka。dev 不装 Kafka 也能跑。
   mq: ${COURSE_MQ:rabbit}
