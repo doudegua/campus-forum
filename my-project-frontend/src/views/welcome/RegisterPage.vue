@@ -1,6 +1,6 @@
 <script setup>
 
-import {computed, reactive, ref} from "vue";
+import {computed, onMounted, reactive, ref} from "vue";
 import {EditPen, Lock, Message, User} from "@element-plus/icons-vue";
 import router from "@/router/index.js";
 import {get, post} from "@/net/index.js";
@@ -13,6 +13,30 @@ import {useCountdown} from "@/utils/useCountdown.js";
 const {coldTime, isCounting, start: startCountdown} = useCountdown(60);
 
 const formRef = ref(null);
+
+/**
+ * 后端是否还允许自助注册。默认 true，问不到也当 true。
+ *
+ * 为什么不读构建期环境变量（VITE_DEMO_ENABLED）：
+ *   那个是打包时打死的常量，只反映"构建那一刻"的环境；
+ *   而注册开没开是**后端运行期**的配置（app.demo.registration-enabled）。
+ *   两边各猜各的，就会出现"界面给了入口、点进去 403"的漂移。
+ *   所以向后端要状态，只留一个真相来源。
+ *
+ * 为什么要给失败回调兜底成 true：
+ *   这是个"辅助"接口，它挂了不该把注册功能一起挡掉 ——
+ *   失败时退回"显示表单"，让用户自己点下去，后端仍会按真实配置拒绝。
+ *   宁可多显示一个入口，也不要因为一个查询失败把功能锁死。
+ */
+const registrationEnabled = ref(true);
+
+onMounted(() => {
+  get('/api/auth/demo-status', (data) => {
+    registrationEnabled.value = data.registrationEnabled !== false;
+  }, () => {
+    registrationEnabled.value = true;
+  })
+})
 
 const form = reactive({
   username: "",
@@ -103,8 +127,36 @@ function register() {
 
 <template>
   <div style="text-align: center;margin: 50px 20px 0;">
-    <div style="font-size: 25px;font-weight: bold">注册新用户</div>
-    <div style="font-size: 14px;color: gray">欢迎注册平台。请填写信息：</div>
+    <div style="font-size: 25px;font-weight: bold">
+      {{ registrationEnabled ? '注册新用户' : '注册暂不可用' }}
+    </div>
+    <div style="font-size: 14px;color: gray">
+      {{ registrationEnabled ? '欢迎注册平台。请填写信息：' : '演示站点不开放自助注册' }}
+    </div>
+
+    <!--
+      演示站点：后端把注册关了，这里就别再把表单摆出来。
+      不然后端 403、前端还在让人填六个格子，填完才发现发不出验证码。
+      文案里要说清"下一步做什么"（去点「访客体验」），而不是只说"不可用"。
+    -->
+    <div v-if="!registrationEnabled" style="margin-top: 40px; display: flex; justify-content: center;">
+      <el-card shadow="never" style="max-width: 380px; text-align: left;">
+        <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">
+          访客演示模式已开启，注册暂不可用
+        </div>
+        <div style="font-size: 13px; color: #666; line-height: 1.8;">
+          这是一个供访客浏览的演示站点。为了避免陌生注册与邮件滥用，
+          自助注册和邮箱验证码已经关闭。<br>
+          你可以回到登录页，点击「访客体验」直接进入，不需要账号。
+        </div>
+        <el-button style="margin-top: 18px; width: 100%;" type="warning" plain
+                   @click="router.push('/')">
+          返回登录页
+        </el-button>
+      </el-card>
+    </div>
+
+    <template v-else>
     <div style="margin-top: 50px">
       <el-form :model="form" :rules="rule" ref="formRef">
         <el-form-item prop="username">
@@ -161,6 +213,8 @@ function register() {
     <div style="margin-top: 80px">
       <el-button @click="register" style="width: 270px" type="warning" plain>立即注册</el-button>
     </div>
+    </template>
+
     <div style="margin-top: 20px">
       <span style="font-size: 14px;line-height: 15px;color: gray">已有账号？</span>
       <el-link style="translate: 0 -1px" @click="router.push('/')">立即登录</el-link>
