@@ -71,10 +71,20 @@ echo "[$(ts)] 课程名额 capacity = $CAPACITY"
 echo "[$(ts)] ① 重置上一轮状态"
 sql "DELETE FROM db_course_selection WHERE course_id=$COURSE_ID;
      UPDATE db_course SET selected_count=0 WHERE id=$COURSE_ID;" >/dev/null
-redis_del "course:stock:$COURSE_ID"
+# ⚠️ 键名以 Const 为准，别凭感觉写：
+#   course:meta:{id}            预热元数据（hash，含 ready / capacity / start / end）
+#   course:chosen:{id}          已抢到的 uid 集合（set）
+#   course:chosen:staging:{id}  预热的临时集合（rename 成 chosen）
+#   course:result:{id}:{uid}    每个用户的最终结果
+#   course:preheat:lock:{id}    预热互斥锁
+# 注意没有 course:stock: —— Const.COURSE_STOCK 是遗留常量，代码里没有实际使用。
+# 第一版脚本删的就是它，于是"重置"什么也没删，第二次预热直接 SKIPPED。
+redis_del "course:meta:$COURSE_ID"
 redis_del "course:chosen:$COURSE_ID"
+redis_del "course:chosen:staging:$COURSE_ID"
 redis_del "course:result:$COURSE_ID:*"
-echo "[$(ts)]    已清空选课记录 / 计数 / Redis"
+redis_del "course:preheat:lock:$COURSE_ID"
+echo "[$(ts)]    已清空选课记录 / 计数 / Redis（meta / chosen / staging / result / lock）"
 
 # ---------- ② 预热 ----------
 echo "[$(ts)] ② 预热（把 stock 设成 $CAPACITY）"
@@ -97,9 +107,9 @@ if ! echo "$PREHEAT_RESP" | grep -q "OPENED"; then
   exit 1
 fi
 
-# 确认 Redis 里的 stock 真的是 capacity
-STOCK="$(docker compose exec -T redis redis-cli HGET "course:stock:$COURSE_ID" ready 2>/dev/null | tr -d '\r')"
-echo "[$(ts)]    Redis ready=$STOCK"
+# 确认 Redis 里的 ready 真的是 1
+READY="$(docker compose exec -T redis redis-cli HGET "course:meta:$COURSE_ID" ready 2>/dev/null | tr -d '\r')"
+echo "[$(ts)]    Redis course:meta:$COURSE_ID ready=$READY"
 
 # ---------- ③ 压测 ----------
 echo "[$(ts)] ③ 准备 $VUS 个不同用户的 token"
